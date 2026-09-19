@@ -51,6 +51,17 @@ uv run jevinf --help
 ExFAT）放 uv 的 `.venv` 会坏 —— 构建产物也放普通本地盘。本原型针对 Apple silicon（MPS）与统一
 内存调优。
 
+后端由 `--backend` 选择：
+
+| 后端 | 运行在 | 状态 |
+|---|---|---|
+| `torch-mps` | Apple silicon，经 Metal | 默认 |
+| `torch-cpu` | 纯 CPU | 已声明 |
+| `torch-cuda` | NVIDIA，经 CUDA | 已声明 |
+| `torch-rocm` | AMD，经 ROCm | 已声明 |
+
+目前只有 `torch-mps` 接通；其余三个会拒绝运行。
+
 检查脚本，由省到费：
 
 ```bash

@@ -53,6 +53,17 @@ uv run jevinf --help
 `.venv` on a filesystem that lacks them (ExFAT, for instance) breaks; keep build artifacts on a
 normal local disk. The prototype is tuned for Apple silicon (MPS) with unified memory.
 
+Backends are chosen with `--backend`:
+
+| Backend | Runs on | Status |
+|---|---|---|
+| `torch-mps` | Apple silicon through Metal | default |
+| `torch-cpu` | CPU only | declared |
+| `torch-cuda` | NVIDIA GPUs through CUDA | declared |
+| `torch-rocm` | AMD GPUs through ROCm | declared |
+
+Only `torch-mps` is wired up; the other three refuse to run.
+
 Checks, cheapest first:
 
 ```bash

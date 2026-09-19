@@ -11,6 +11,8 @@ import importlib.util
 import sys
 from pathlib import Path
 
+from .backend import DEFAULT_BACKEND, resolve
+
 DEFAULT_SRC = Path(__file__).resolve().parents[2] / "vendor" / "nanojev"
 
 
@@ -51,11 +53,11 @@ def prepare_examples(payload, tokenizer, max_length):
     return predict_module().prepare_examples(payload, tokenizer, max_length)
 
 
-def load_predictor(checkpoint_dir, device_name="mps", precision="fp32", src: Path = DEFAULT_SRC):
+def load_predictor(checkpoint_dir, backend=DEFAULT_BACKEND, precision="fp32", src: Path = DEFAULT_SRC):
     """Construct the upstream DecisionPredictor. It is this prototype's oracle and weight carrier."""
     module = predict_module(src)
     return module.DecisionPredictor(
-        str(checkpoint_dir), device_name=device_name, precision=precision
+        str(checkpoint_dir), device_name=resolve(backend).device, precision=precision
     )
 
 

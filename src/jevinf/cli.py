@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 
 from . import upstream
+from .backend import BACKENDS, DEFAULT_BACKEND
 from .bench import compare, head_selfcheck, run_bench, summarize
 from .engine import PrefixShareEngine
 from .plan import build_plan
@@ -22,7 +23,7 @@ def _load_payload(path: str | None, split: str | None, states: int | None) -> di
 
 def _predictor(args):
     return upstream.load_predictor(
-        checkpoint_dir=args.model, device_name=args.device, precision="fp32"
+        checkpoint_dir=args.model, backend=args.backend, precision="fp32"
     )
 
 
@@ -100,6 +101,7 @@ def cmd_serve(args) -> int:
 
     service = EvaluateService(
         checkpoint_dir=args.model,
+        backend=args.backend,
         strategy=args.strategy,
         max_rows=args.max_rows,
         enforce_limits=not args.no_limits,
@@ -119,17 +121,21 @@ def cmd_serve(args) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="jevinf", description=__doc__)
-    parser.add_argument("--device", default="mps")
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("--backend", default=DEFAULT_BACKEND, choices=list(BACKENDS),
+                        help="compute backend; only torch-mps is implemented today")
     sub = parser.add_subparsers(dest="cmd", required=True)
 
-    s = sub.add_parser("selfcheck", help="isolated check that the decision head matches upstream")
+    s = sub.add_parser("selfcheck", parents=[common],
+                       help="isolated check that the decision head matches upstream")
     s.add_argument("-m", "--model", required=True, help="checkpoint directory (weights)")
     s.add_argument("--input", default=None)
     s.add_argument("--split", default=None, help="dev split (jsonl)")
     s.add_argument("--states", type=int, default=8)
     s.set_defaults(func=cmd_selfcheck)
 
-    s = sub.add_parser("bench", help="end-to-end comparison + timing on the dev split")
+    s = sub.add_parser("bench", parents=[common],
+                       help="end-to-end comparison + timing on the dev split")
     s.add_argument("-m", "--model", required=True, help="checkpoint directory (weights)")
     s.add_argument("--input", default=None)
     s.add_argument("--split", default=None, help="dev split (jsonl)")
@@ -145,7 +151,7 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("--out", default=None)
     s.set_defaults(func=cmd_bench)
 
-    s = sub.add_parser("eval", help="run a single payload through the engine")
+    s = sub.add_parser("eval", parents=[common], help="run a single payload through the engine")
     s.add_argument("-m", "--model", required=True, help="checkpoint directory (weights)")
     s.add_argument("--input", default=None)
     s.add_argument("--split", default=None, help="dev split (jsonl)")
@@ -155,7 +161,8 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("--out", default=None)
     s.set_defaults(func=cmd_eval)
 
-    s = sub.add_parser("oracle", help="run the upstream baseline and write it to disk")
+    s = sub.add_parser("oracle", parents=[common],
+                       help="run the upstream baseline and write it to disk")
     s.add_argument("-m", "--model", required=True, help="checkpoint directory (weights)")
     s.add_argument("--input", default=None)
     s.add_argument("--split", default=None, help="dev split (jsonl)")
@@ -170,7 +177,8 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("--teacher", default=None)
     s.set_defaults(func=cmd_compare)
 
-    s = sub.add_parser("serve", help="start the Jev-compatible service (POST /api/evaluate)")
+    s = sub.add_parser("serve", parents=[common],
+                       help="start the Jev-compatible service (POST /api/evaluate)")
     s.add_argument("-m", "--model", required=True, help="checkpoint directory (weights)")
     s.add_argument("--host", default="127.0.0.1")
     s.add_argument("--port", type=int, default=8226)
