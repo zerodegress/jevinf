@@ -68,20 +68,25 @@ ExFAT）放 uv 的 `.venv` 会坏 —— 构建产物也放普通本地盘。本
 |---|---|---|
 | `nanojev` | Qwen3-0.6B 因果解码器 + 训练好的决策头 | 默认，三阶段前缀共享 |
 | `decider-2b` | Qwen3.5-2B 因果解码器，每 4 层有 3 层线性注意力（KV + 递归混血缓存） | 已接通，一份 state 前缀 fork 给每题一行 |
-| `laya` | ModernBERT 编码器，state 与选项同在一段序列里 | 仅声明，会拒绝运行 |
+| `laya` | ModernBERT-large 编码器 + 决策头，每题一段序列 | 已接通，一题一行（`laya.py`） |
 
-`nanojev` 与 `decider-2b` 已接通，`laya` 会拒绝运行。各架构的**结构性事实**（注意力怎么走、答案从哪里
+三个架构都已接通。各架构的**结构性事实**（注意力怎么走、答案从哪里
 读出、段与段之间要驻留什么）记在 `src/jevinf/arch.py` —— 用哪套编排就是由这些事实决定的（三阶段那套在
-`engine.py`，fork 那套在 `decider.py`）。
+`engine.py`，fork 那套在 `decider.py`，单路径那套在 `laya.py`）。
 
 检查脚本，由省到费：
 
 ```bash
 uv run jevinf selfcheck -m models/NanoJev --split data/dev.jsonl --states 4   # 只验决策头
+uv run python scripts/decider_parity.py --model models/decider-2b             # 与 decider 包对拍
+uv run python scripts/laya_parity.py --model models/laya                      # 与官方推理入口对拍
 uv run jevinf serve -m models/NanoJev --port 8226 &                          # 需要活服务
 uv run python scripts/jev_conformance.py --base http://127.0.0.1:8226        # 官方 SDK 一致性验收
 uv run python scripts/api_smoke.py --split data/dev.jsonl                    # golden 对拍
 ```
+
+每个家族都有一个「与它自己的官方实现逐题对拍」的验收脚本（官方代码就放在权重旁边）：
+`scripts/decider_parity.py` 对 `decider` 包，`scripts/laya_parity.py` 对 `rl_agent_api.RLAgent`。
 
 ## 文档
 

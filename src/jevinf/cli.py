@@ -24,20 +24,42 @@ def _load_payload(path: str | None, split: str | None, states: int | None) -> di
 
 def _predictor(args):
     return upstream.load_predictor(
-        checkpoint_dir=args.model, backend=args.backend, arch=args.arch, precision="fp32"
+        checkpoint_dir=args.model, backend=args.backend, arch=args.arch, precision="fp32",
+        crop_state=getattr(args, "crop_state", False),
     )
+
+
+def _engine(pred, args):
+    """Pick the engine for the loaded family. `arrangement` is the dispatch key, not the model name."""
+    arrangement = pred.arch.arrangement
+    if arrangement == "single-path":
+        from .laya import LayaEngine
+
+        return LayaEngine(pred, max_rows=args.max_rows, crop_state=args.crop_state)
+    if arrangement == "state-fork":
+        from .decider import DeciderEngine
+
+        return DeciderEngine(pred, max_rows=args.max_rows, prefix_chunk=args.prefix_chunk,
+                             max_state_tokens=args.max_state_tokens or None)
+    return PrefixShareEngine(pred, strategy=args.strategy, head_chunk=args.head_chunk)
+
+
+def _evaluate(engine, pred, args, payload):
+    """Hand each family the knobs it has; a knob it does not have is refused inside the engine."""
+    if pred.arch.arrangement == "three-stage":
+        return engine.evaluate(payload)
+    if pred.arch.arrangement == "state-fork":
+        return engine.evaluate(payload, layout=args.layout, temperature=args.temperature or None)
+    return engine.evaluate(payload, temperature=args.temperature or None)
 
 
 def cmd_selfcheck(args) -> int:
     pred = _predictor(args)
     payload = _load_payload(args.input, args.split, args.states)
-    if pred.arch.arrangement == "state-fork":
-        from .decider import DeciderEngine
-
-        engine = DeciderEngine(pred, max_rows=args.max_rows, prefix_chunk=args.prefix_chunk)
-        print(json.dumps(engine.selfcheck(payload), ensure_ascii=False, indent=1))
+    if pred.arch.arrangement == "three-stage":
+        print(json.dumps(head_selfcheck(pred, payload), ensure_ascii=False, indent=1))
         return 0
-    print(json.dumps(head_selfcheck(pred, payload), ensure_ascii=False, indent=1))
+    print(json.dumps(_engine(pred, args).selfcheck(payload), ensure_ascii=False, indent=1))
     return 0
 
 
@@ -64,15 +86,7 @@ def cmd_bench(args) -> int:
 def cmd_eval(args) -> int:
     pred = _predictor(args)
     payload = _load_payload(args.input, args.split, args.states)
-    if pred.arch.arrangement == "state-fork":
-        from .decider import DeciderEngine
-
-        eng = DeciderEngine(pred, max_rows=args.max_rows, prefix_chunk=args.prefix_chunk,
-                            max_state_tokens=args.max_state_tokens or None)
-        out = eng.evaluate(payload, layout=args.layout, temperature=args.temperature or None)
-    else:
-        eng = PrefixShareEngine(pred, strategy=args.strategy, head_chunk=args.head_chunk)
-        out = eng.evaluate(payload)
+    out = _evaluate(_engine(pred, args), pred, args, payload)
     text = json.dumps(out, ensure_ascii=False, indent=1, allow_nan=False)
     if args.out:
         Path(args.out).parent.mkdir(parents=True, exist_ok=True)
@@ -120,12 +134,14 @@ def cmd_serve(args) -> int:
         strategy=args.strategy,
         max_rows=args.max_rows,
         max_state_tokens=args.max_state_tokens or None,
+        crop_state=args.crop_state,
         enforce_limits=not args.no_limits,
         api_key=args.api_key,
     )
     app = create_app(service)
-    knob = ("layout=state_first (state-fork)" if service.facts["arrangement"] == "state-fork"
-            else f"strategies={','.join(STRATEGIES)}")
+    knob = {"state-fork": "layout=state_first",
+            "single-path": f"sequence_limit={service.predictor.max_len} crop_state={args.crop_state}"}.get(
+        service.facts["arrangement"], f"strategies={','.join(STRATEGIES)}")
     print(f"jevinf serve: device={service.predictor.device} checkpoint={service.predictor.root} "
           f"arch={service.arch} arrangement={service.facts['arrangement']} {knob} "
           f"max_rows={args.max_rows} temperature={service.facts['temperature_default']} "
@@ -143,13 +159,16 @@ def main(argv: list[str] | None = None) -> int:
     common.add_argument("--backend", default=DEFAULT_BACKEND, choices=list(BACKENDS),
                         help="compute backend; only torch-mps is implemented today")
     common.add_argument("--arch", default=DEFAULT_ARCH, choices=list(ARCHITECTURES),
-                        help="model architecture; nanojev and decider-2b are wired up, laya is declared only")
+                        help="model architecture; nanojev, decider-2b and laya are wired up")
 
     family = argparse.ArgumentParser(add_help=False)
     family.add_argument("--max-rows", type=int, default=32,
-                        help="decider-2b: how many rows one batched forward may carry")
+                        help="rows per batched forward (decider-2b, laya)")
     family.add_argument("--prefix-chunk", type=int, default=1024,
                         help="decider-2b: prefix tokens per forward (0 = one shot)")
+    family.add_argument("--crop-state", action="store_true",
+                        help="laya: crop a state that does not fit the sequence budget instead of "
+                             "refusing it; every answer from a cropped state says so")
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     s = sub.add_parser("selfcheck", parents=[common, family],
@@ -219,6 +238,9 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("--max-state-tokens", type=int, default=0,
                    help="decider-2b: state token budget for the whole service (0 = the model's own "
                         "budget); a state over it is refused with a reason, not truncated")
+    s.add_argument("--crop-state", action="store_true",
+                   help="laya: crop a state that does not fit the sequence budget instead of refusing "
+                        "it; every answer from a cropped state says so")
     s.add_argument("--no-limits", action="store_true",
                    help="do not enforce the per-family request limits (states/questions/paths and body size)")
     s.add_argument("--api-key", default=None,

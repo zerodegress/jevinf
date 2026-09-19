@@ -194,13 +194,18 @@ def main() -> int:
 
         # --- error contract
         print("\nError contract:")
+        # Deliberately far past any per-question budget these backends have (thousands of tokens, not
+        # "probably over 512"): the check is the error contract, and a state that happens to fit would
+        # turn it into a coin flip.
         long_state = ("The grid reports blocked cells, visited cells, the current heading and "
-                      "the remaining distance to the goal for the active navigation episode. ") * 20
+                      "the remaining distance to the goal for the active navigation episode. ") * 80
         cases = []
         if ARRANGEMENT != "state-fork":
-            # Only the three-stage family caps a path at 512 tokens; the state-fork family's budget is
-            # two orders of magnitude larger, so the same request must succeed there (checked below).
-            cases.append(("path over 512 tokens (backend hard limit)",
+            # A per-question budget is a property of the three-stage and single-path families: the first
+            # caps a candidate path at 512 tokens, the second caps a whole sequence. The state-fork
+            # family's budget is two orders of magnitude larger, so the same request must be served
+            # there instead (checked below).
+            cases.append(("state far past the per-question budget (backend hard limit)",
                           dict(state=long_state, questions={"q": Noul(instructions="ok?")})))
         cases += [
             ("score with only 1 level (legal in Jev, the backend cannot serve it)",

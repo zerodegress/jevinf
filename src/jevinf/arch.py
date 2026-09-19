@@ -1,7 +1,7 @@
 """Model architectures.
 
-Two families are wired up (`nanojev`, `decider-2b`); `laya` is declared so an architecture that is not
-wired up refuses to run rather than being loaded as if it were one of the working ones.
+Three families are wired up (`nanojev`, `decider-2b`, `laya`); an architecture that is declared but
+not wired up refuses to run rather than being loaded as if it were one of the working ones.
 
 The fields are structural, because that is what the engine's arrangement depends on:
 
@@ -42,7 +42,7 @@ ARCHITECTURES: dict[str, Architecture] = {
         "suffix form three segments of one causal path",
     ),
     "laya": Architecture(
-        "laya", False, "bidirectional", "marker-scores", "none", "single-path",
+        "laya", True, "bidirectional", "marker-scores", "none", "single-path",
         "ModernBERT encoder: state, question and every option share one sequence, and each option is "
         "scored at its own marker token, so a question is a single path",
     ),

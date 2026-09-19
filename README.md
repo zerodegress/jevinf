@@ -70,17 +70,23 @@ The model family is chosen with `--arch`:
 |---|---|---|
 | `nanojev` | Qwen3-0.6B causal decoder plus a trained decision head | default, three-stage prefix sharing |
 | `decider-2b` | Qwen3.5-2B causal decoder, 3 of every 4 layers linear attention (KV + recurrent cache) | wired up, one state prefix forked to a row per question |
-| `laya` | ModernBERT encoder, state and options in one sequence | declared only, refuses to run |
+| `laya` | ModernBERT-large encoder plus a decision head, one sequence per question | wired up, one row per question (`laya.py`) |
 
-`nanojev` and `decider-2b` are wired up; `laya` refuses to run. `src/jevinf/arch.py` records what each
+All three are wired up. `src/jevinf/arch.py` records what each
 family is structurally — how attention runs, where answers are read from, what has to stay resident
 between segments — because those facts are what decide which arrangement applies (`engine.py` for the
-three-stage one, `decider.py` for the fork).
+three-stage one, `decider.py` for the fork, `laya.py` for the single sequence per question).
+
+Each family also has an adapter check against its own reference implementation, which ships beside the
+weights: `scripts/decider_parity.py` against the `decider` package, `scripts/laya_parity.py` against
+`rl_agent_api.RLAgent`. Both must agree with their reference question by question.
 
 Checks, cheapest first:
 
 ```bash
 uv run jevinf selfcheck -m models/NanoJev --split data/dev.jsonl --states 4   # decision head only
+uv run python scripts/decider_parity.py --model models/decider-2b             # vs the decider package
+uv run python scripts/laya_parity.py --model models/laya                      # vs the checkpoint's own code
 uv run jevinf serve -m models/NanoJev --port 8226 &                          # needs a live server
 uv run python scripts/jev_conformance.py --base http://127.0.0.1:8226        # official SDK conformance
 uv run python scripts/api_smoke.py --split data/dev.jsonl                    # golden cross-check

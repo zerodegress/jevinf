@@ -84,7 +84,7 @@ RESPONSE_STAT_HEADERS = (
 )
 
 
-def family_facts(predictor, max_state_tokens: int | None = None) -> dict:
+def family_facts(predictor, max_state_tokens: int | None = None, crop_state: bool = False) -> dict:
     """What the loaded architecture can serve: its own name, limits, knobs and default temperature.
 
     The two families differ in ways the service has to state rather than assume: which knob applies
@@ -95,6 +95,37 @@ def family_facts(predictor, max_state_tokens: int | None = None) -> dict:
     """
     arch = predictor.arch
     shared_limits = {"states": MAX_STATES, "questions": MAX_QUESTIONS}
+    if arch.arrangement == "single-path":
+        return {
+            "arrangement": arch.arrangement,
+            "model_name": "laya",
+            # No single temperature exists for this family: see the refusal in EvaluateService.
+            "temperature_default": None,
+            "precision": predictor.storage,
+            "crop_state": bool(crop_state),
+            "limits": {**shared_limits, "paths": None},
+            "backend_limits": {
+                "sequence_tokens": predictor.max_len,
+                "head_tokens": predictor.head_max_len,
+                "choice_options": f"2-{NANO_CHOICE_MAX}",
+                "score_levels": f"{NANO_SCORE_MIN}-{NANO_SCORE_MAX}",
+            },
+            "knobs": {k: v for k, v in HEADER_KNOBS.items()
+                      if k not in ("x-jevinf-strategy", "x-jevinf-temperature")},
+            "description": (
+                f"Local decision model ({arch.name}): ModernBERT-large encoder (bidirectional, 421M) plus a "
+                f"from-scratch decision head. Each question is one sequence of at most {predictor.max_len} "
+                f"tokens (question and options within {predictor.head_max_len}) with one [MASK] marker per "
+                f"option, scored at its own marker and read at a fitted per-cardinality temperature, so "
+                f"nothing is shared between questions. "
+                + ("A state that does not fit is cropped and every answer says so. " if crop_state
+                   else "A state that does not fit is refused, not cropped. ")
+                + f"choice 2-{NANO_CHOICE_MAX} options, score {NANO_SCORE_MIN}-{NANO_SCORE_MAX} levels, noul "
+                f"P(true). Note the >=11-option choice bucket is fitted at "
+                f"{predictor.temperature_by_options.get('choice:11+')}, below 1.0, i.e. it sharpens its "
+                f"distribution rather than reporting the odds as measured."
+            ),
+        }
     if arch.arrangement == "state-fork":
         return {
             "arrangement": arch.arrangement,
@@ -152,7 +183,15 @@ def stat_headers(ex: dict, facts: dict) -> dict:
         "x-jevinf-architecture": str(ex.get("architecture")),
         "x-jevinf-wall-ms": f"{ex.get('wall_s', 0.0) * 1000:.1f}",
     }
-    if facts["arrangement"] == "state-fork":
+    if facts["arrangement"] == "single-path":
+        out.update({
+            "x-jevinf-layout": str(ex.get("layout")),
+            "x-jevinf-rows": str(ex.get("rows")),
+            "x-jevinf-prefix-sharing": "0",
+            "x-jevinf-sequence-limit": str(facts["backend_limits"]["sequence_tokens"]),
+            "x-jevinf-crop-state": "1" if ex.get("crop_state") else "0",
+        })
+    elif facts["arrangement"] == "state-fork":
         out.update({
             "x-jevinf-layout": str(ex.get("layout")),
             "x-jevinf-rows": str(ex.get("rows")),
@@ -197,16 +236,22 @@ class EvaluateService:
 
     def __init__(self, checkpoint_dir, backend: str = DEFAULT_BACKEND, arch: str = DEFAULT_ARCH,
                  strategy: str = "fused_state",
-                 max_rows: int = 64, max_state_tokens: int | None = None,
+                 max_rows: int = 64, max_state_tokens: int | None = None, crop_state: bool = False,
                  enforce_limits: bool = True, api_key: str | None = None):
-        self.predictor = upstream.load_predictor(checkpoint_dir, backend=backend, arch=arch)
+        self.predictor = upstream.load_predictor(checkpoint_dir, backend=backend, arch=arch,
+                                                 crop_state=crop_state)
         self.arch = self.predictor.arch.name
         if max_state_tokens and self.predictor.arch.arrangement != "state-fork":
             raise ValueError(
                 f"--max-state-tokens only applies to the state-fork family; {self.arch!r} bounds a "
                 f"request by its candidate-path cap ({self.predictor.limit} tokens) instead"
             )
-        self.facts = family_facts(self.predictor, max_state_tokens=max_state_tokens)
+        if crop_state and self.predictor.arch.arrangement != "single-path":
+            raise ValueError(
+                f"--crop-state only applies to the single-path family; {self.arch!r} has no fixed "
+                f"sequence budget to crop against"
+            )
+        self.facts = family_facts(self.predictor, max_state_tokens=max_state_tokens, crop_state=crop_state)
         self.default_strategy = strategy
         self.default_max_rows = max_rows
         self.max_state_tokens = max_state_tokens
@@ -248,6 +293,14 @@ class EvaluateService:
     # ------------------------------------------------------------------ engine
     def _engine(self, strategy: str, max_rows: int):
         """One engine per (strategy, rows) pair. Which arrangement is built is data, not a flag here."""
+        if self.facts["arrangement"] == "single-path":
+            from .laya import LayaEngine
+
+            key = ("single-path", max_rows)
+            if key not in self._engines:
+                self._engines[key] = LayaEngine(self.predictor, max_rows=max_rows,
+                                                crop_state=self.facts["crop_state"])
+            return self._engines[key]
         if self.facts["arrangement"] == "state-fork":
             from .decider import DeciderEngine
 
@@ -287,12 +340,12 @@ class EvaluateService:
 
         # 3) knobs. A strategy tier only exists for the three-stage arrangement: asking for one on
         # another family is refused rather than silently ignored, so nobody believes they set it.
-        if self.facts["arrangement"] == "state-fork":
+        if self.facts["arrangement"] != "three-stage":
             if strategy:
                 raise ApiError(
                     400, "BadStrategy",
-                    f"architecture {self.arch!r} is arranged by layout, not by strategy "
-                    f"(arrangement={self.facts['arrangement']!r}); x-jevinf-strategy does not apply",
+                    f"architecture {self.arch!r} is arranged by "
+                    f"{self.facts['arrangement']!r}, not by strategy; x-jevinf-strategy does not apply",
                 )
             strat = self.facts["arrangement"]
         else:
@@ -303,9 +356,22 @@ class EvaluateService:
         rows = int(max_rows) if max_rows else self.default_max_rows
         if rows < 1:
             raise ApiError(400, "BadMaxRows", "max-rows must be >= 1")
-        temp = self.facts["temperature_default"] if temperature is None else float(temperature)
-        if not (temp > 0):
-            raise ApiError(400, "BadTemperature", "temperature must be a positive number")
+        if self.facts["temperature_default"] is None:
+            # This family has no single readout temperature: its calibration is per (question type,
+            # option count). Substituting one scalar would silently change every probability, so a
+            # request that asks for one is refused; the applied value rides along in every answer.
+            if temperature is not None:
+                raise ApiError(
+                    400, "BadTemperature",
+                    f"architecture {self.arch!r} reads its answers at per-cardinality fitted "
+                    f"temperatures (temperature_by_options in the checkpoint), so a request-level "
+                    f"temperature is refused; the applied value is reported as rl_agent.temperature",
+                )
+            temp = None
+        else:
+            temp = self.facts["temperature_default"] if temperature is None else float(temperature)
+            if not (temp > 0):
+                raise ApiError(400, "BadTemperature", "temperature must be a positive number")
 
         # 4) inference (single-threaded, serialized)
         with self.lock:
@@ -342,12 +408,22 @@ class EvaluateService:
                 "directory": str(self.predictor.root),
                 **self._checkpoint_facts(),
             },
-            "temperature": {
-                "value": float(temp),
-                "fitted_by_this_command": False,
-                "note": ("applies the given scalar explicitly; the default is the loaded model's own "
-                         "value, which for this architecture is a fitted one"),
-            },
+            "temperature": (
+                {
+                    "value": float(temp),
+                    "fitted_by_this_command": False,
+                    "note": ("applies the given scalar explicitly; the default is the loaded model's own "
+                             "value, which for this architecture is a fitted one"),
+                }
+                if temp is not None else
+                {
+                    "value": None,
+                    "fitted_by_this_command": False,
+                    "note": ("this architecture has no single readout temperature: it is fitted per "
+                             "question type and option count, and the value applied to each answer is "
+                             "reported as rl_agent.temperature with its bucket"),
+                }
+            ),
             "execution": ex,
             "states": out["states"],
         }
@@ -394,6 +470,7 @@ def create_app(service: EvaluateService):
                                  if service.facts["arrangement"] != "state-fork" else None),
             "default_max_rows": service.default_max_rows,
             "default_temperature": service.facts["temperature_default"],
+            "crop_state": service.facts.get("crop_state"),
             "limits": {**service.facts["limits"], "body_bytes": MAX_BODY_BYTES},
             "enforce_limits": service.enforce_limits,
             "calls": service.calls,

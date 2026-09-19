@@ -55,7 +55,7 @@ def prepare_examples(payload, tokenizer, max_length):
 
 
 def load_predictor(checkpoint_dir, backend: str = DEFAULT_BACKEND, arch: str = DEFAULT_ARCH,
-                   precision="fp32", src: Path = DEFAULT_SRC):
+                   precision="fp32", src: Path = DEFAULT_SRC, crop_state: bool = False):
     """Construct the predictor for the requested architecture. It is this prototype's oracle and weight carrier.
 
     The architecture tag is resolved here and stamped on the predictor, so the engine can tell which
@@ -63,6 +63,13 @@ def load_predictor(checkpoint_dir, backend: str = DEFAULT_BACKEND, arch: str = D
     off a branch on the name.
     """
     spec = resolve_arch(arch)
+    if spec.arrangement == "single-path":
+        from .laya import load_predictor as load_laya
+
+        # This family's sequence budget is fixed by the architecture, so it has a crop-or-refuse
+        # choice where the others have a numeric budget; the flag travels with the predictor.
+        return load_laya(checkpoint_dir, backend=backend, arch=spec, precision=precision,
+                         crop_state=crop_state)
     if spec.arrangement == "state-fork":
         from .decider import load_predictor as load_decider
 
