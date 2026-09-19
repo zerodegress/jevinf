@@ -68,7 +68,7 @@ def cmd_eval(args) -> int:
         from .decider import DeciderEngine
 
         eng = DeciderEngine(pred, max_rows=args.max_rows, prefix_chunk=args.prefix_chunk,
-                            max_ctx_tokens=args.max_ctx_tokens or None)
+                            max_state_tokens=args.max_state_tokens or None)
         out = eng.evaluate(payload, layout=args.layout, temperature=args.temperature or None)
     else:
         eng = PrefixShareEngine(pred, strategy=args.strategy, head_chunk=args.head_chunk)
@@ -119,15 +119,18 @@ def cmd_serve(args) -> int:
         arch=args.arch,
         strategy=args.strategy,
         max_rows=args.max_rows,
+        max_state_tokens=args.max_state_tokens or None,
         enforce_limits=not args.no_limits,
         api_key=args.api_key,
     )
     app = create_app(service)
+    knob = ("layout=state_first (state-fork)" if service.facts["arrangement"] == "state-fork"
+            else f"strategies={','.join(STRATEGIES)}")
     print(f"jevinf serve: device={service.predictor.device} checkpoint={service.predictor.root} "
-          f"arch={service.arch} strategy={args.strategy} max_rows={args.max_rows} "
+          f"arch={service.arch} arrangement={service.facts['arrangement']} {knob} "
+          f"max_rows={args.max_rows} temperature={service.facts['temperature_default']} "
           f"limits={'on' if service.enforce_limits else 'off'} "
-          f"auth={'required' if args.api_key else 'open'} "
-          f"strategies={','.join(STRATEGIES)}", flush=True)
+          f"auth={'required' if args.api_key else 'open'}", flush=True)
     print("  Jev-compatible: POST /v1/systemone  GET /v1/models"
           "   (native debug entry points: POST /api/evaluate, GET /health)", flush=True)
     uvicorn.run(app, host=args.host, port=args.port, workers=1, log_level=args.log_level)
@@ -183,8 +186,8 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("--head-chunk", type=int, default=128)
     s.add_argument("--layout", default="state_first",
                    help="decider-2b: layout of one state's questions (state_first today)")
-    s.add_argument("--max-ctx-tokens", type=int, default=0,
-                   help="decider-2b: state token budget (0 = the family default)")
+    s.add_argument("--max-state-tokens", type=int, default=0,
+                   help="decider-2b: state token budget (0 = the model's own budget); a longer state is refused, not truncated")
     s.add_argument("--temperature", type=float, default=0.0,
                    help="decider-2b: override the calibrated readout temperature (0 = the card's value)")
     s.add_argument("--out", default=None)
@@ -213,8 +216,11 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("--port", type=int, default=8226)
     s.add_argument("--strategy", default="fused_state")
     s.add_argument("--max-rows", type=int, default=64)
+    s.add_argument("--max-state-tokens", type=int, default=0,
+                   help="decider-2b: state token budget for the whole service (0 = the model's own "
+                        "budget); a state over it is refused with a reason, not truncated")
     s.add_argument("--no-limits", action="store_true",
-                   help="do not enforce the 32 states / 96 questions / 256 paths / 2 MiB limits")
+                   help="do not enforce the per-family request limits (states/questions/paths and body size)")
     s.add_argument("--api-key", default=None,
                    help="when set, /v1/* requires Authorization: Bearer ***")
     s.add_argument("--log-level", default="info")

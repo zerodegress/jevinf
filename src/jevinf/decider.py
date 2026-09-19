@@ -33,7 +33,7 @@ MAX_OPTIONS = 255
 MAX_LEVELS = 10
 MIN_PREFIX = 192  # below this the fork copy costs more than re-prefilling; decider uses the same floor
 DEFAULT_TEMPERATURE = 1.3
-DEFAULT_MAX_CTX_TOKENS = 1536  # decider's own API default; the model's budget is 32768
+DEFAULT_MAX_STATE_TOKENS = 32768  # the model's own budget; only used when the config does not say
 ISOLATED = "{q}\nProposed answer: {level}\nDoes the proposed answer fit?"
 NEUTRAL_NONE = "not listed here"
 
@@ -161,7 +161,9 @@ def render_question(spec: dict) -> dict:
             raise ValueError(f"score criteria: an ordered list of 2..{MAX_LEVELS} level descriptions")
         names = list(range(len(criteria)))
         options = [f"{i}: {_txt(c)}" for i, c in enumerate(criteria)]
-    elif qtype in ("noul", "bool"):
+    elif qtype in ("noul", "bool", "boolean"):
+        # "boolean" is nanojev's name for this question type and is what the shared Jev translation
+        # layer emits (jev_api.to_nano_payload), so both families accept one vocabulary.
         names = [False, True]
         c = criteria or {}
         f, t = c.get("false", c.get(False)), c.get("true", c.get(True))
@@ -172,7 +174,10 @@ def render_question(spec: dict) -> dict:
     return dict(
         question=instructions,
         options=options,
-        type="noul" if qtype == "bool" else qtype,
+        # Normalised here, not just accepted: every branch below dispatches on this value, so leaving
+        # "boolean" through would send a boolean answer down the score path (and read a legend that is
+        # not there). The Jev translation layer emits "boolean".
+        type="noul" if qtype in ("bool", "boolean") else qtype,
         names=names,
         legend=[_txt(c) for c in criteria] if qtype == "score" else None,
         isolated=bool(spec.get("isolated", True)),
@@ -301,7 +306,7 @@ class DeciderPredictor:
     """Weights plus the two things the readout needs: the backbone and the option-letter rows."""
 
     def __init__(self, checkpoint_dir, backend: str = "torch-mps", precision: str = "bf16",
-                 arch=None, max_ctx_tokens: int = DEFAULT_MAX_CTX_TOKENS, temperature: float | None = None):
+                 arch=None, max_state_tokens: int | None = None, temperature: float | None = None):
         import torch
         from transformers import AutoModelForCausalLM, AutoTokenizer
 
@@ -309,7 +314,9 @@ class DeciderPredictor:
 
         self._torch = torch
         self.root = str(checkpoint_dir)
-        self.device = resolve_backend(backend or DEFAULT_BACKEND).device
+        # A torch.device, not the backend's string: both families expose the same thing, so callers
+        # (the service's /health, for one) do not have to know which family they are holding.
+        self.device = torch.device(resolve_backend(backend or DEFAULT_BACKEND).device)
         self.arch = arch
         cfg = {}
         try:
@@ -320,10 +327,12 @@ class DeciderPredictor:
         self.temperature = float(temperature if temperature is not None else cfg.get("temperature", DEFAULT_TEMPERATURE))
         self.temperature_schema_first = float(cfg.get("temperature_schema_first", self.temperature))
         self.max_options = int(cfg.get("max_options", MAX_OPTIONS))
-        self.max_state_tokens = int(cfg.get("max_state_tokens", 32768))
+        # The state budget defaults to the model's own, not to the smaller value one of decider's own
+        # entry points happens to use: a caller that hits the budget is told so (see score_rows), and
+        # silently reading 1536 of a 6000-token state is the failure this family is worst at.
+        self.max_state_tokens = int(max_state_tokens or cfg.get("max_state_tokens", DEFAULT_MAX_STATE_TOKENS))
         self.isolated_levels = bool(cfg.get("isolated_levels", False))
         self.neutralize_none = bool(cfg.get("neutralize_none", True))
-        self.max_ctx_tokens = int(max_ctx_tokens)
         dtype = torch.float16 if precision == "fp16" else torch.bfloat16
         self.tokenizer = AutoTokenizer.from_pretrained(self.root)
         lm = AutoModelForCausalLM.from_pretrained(self.root, dtype=dtype).to(self.device).eval()
@@ -357,6 +366,8 @@ class DeciderStats:
     baseline_tokens: int = 0  # rows counted in full, i.e. what a per-row recompute would push
     prefix_tokens_saved: int = 0
     cache_bytes: int = 0
+    state_tokens: int = 0
+    state_budget: int = 0
     wall_s: float = 0.0
     t_prefix: float = 0.0
     t_fork: float = 0.0
@@ -370,7 +381,7 @@ class DeciderEngine:
     """The arrangement in this module's docstring, for a predictor whose cache is hybrid."""
 
     def __init__(self, predictor: DeciderPredictor, *, max_rows: int = 32, prefix_chunk: int = 1024,
-                 min_prefix: int = MIN_PREFIX, max_ctx_tokens: int | None = None):
+                 min_prefix: int = MIN_PREFIX, max_state_tokens: int | None = None):
         self.p = predictor
         self.arch = self._check_arch(predictor)
         self.torch = predictor._torch
@@ -381,7 +392,7 @@ class DeciderEngine:
         self.max_rows = max(1, max_rows)
         self.prefix_chunk = max(0, prefix_chunk)  # 0 = one shot
         self.min_prefix = min_prefix
-        self.max_ctx_tokens = int(max_ctx_tokens or predictor.max_ctx_tokens)
+        self.max_state_tokens = int(max_state_tokens or predictor.max_state_tokens)
         self.temperature = predictor.temperature
 
     @staticmethod
@@ -564,12 +575,25 @@ class DeciderEngine:
 
     # ---------------------------------------------------------------- top level
     def score_rows(self, state, rows: list[dict], *, layout: str = "state_first",
-                   temperature: float | None = None, max_ctx_tokens: int | None = None):
-        """Score a list of (question, options) rows against one state. Returns probabilities per row."""
+                   temperature: float | None = None, max_state_tokens: int | None = None):
+        """Score a list of (question, options) rows against one state. Returns probabilities per row.
+
+        A state over the budget is **refused**, not truncated: this model reads a long state fine (its
+        own budget is 32768 tokens), so quietly reading the first N tokens would answer from a different
+        input than the caller sent. decider's own entry points disagree on the default (1536 vs 32768),
+        which is exactly how that failure stays invisible.
+        """
         torch = self.torch
         temperature = self.temperature if temperature is None else temperature
-        limit = int(max_ctx_tokens or self.max_ctx_tokens)
-        state_ids = self.tok.encode("Context:\n" + render_state(state), add_special_tokens=False)[:limit]
+        limit = int(max_state_tokens or self.max_state_tokens)
+        encoded = self.tok.encode("Context:\n" + render_state(state), add_special_tokens=False)
+        if len(encoded) > limit:
+            raise ValueError(
+                f"state is {len(encoded)} tokens, over the budget of {limit}; raise the budget "
+                f"(--max-state-tokens, or max_state_tokens= in the API) rather than having it "
+                f"truncated behind your back"
+            )
+        state_ids = encoded
         items, all_rows = [], []
         for k, row in enumerate(rows):
             options = neutralize_options(row["options"]) if self.p.neutralize_none else list(row["options"])
@@ -579,6 +603,8 @@ class DeciderEngine:
             items.append({"rows": [(ids, slot)], "nopts": [len(options)]})
             all_rows.append(ids)
         stats = DeciderStats(layout=layout, rows=len(rows), baseline_tokens=sum(len(r) for r in all_rows))
+        stats.state_tokens = len(state_ids)
+        stats.state_budget = limit
         with torch.inference_mode():
             if layout == "state_first":
                 probs = self.score_shared(items, temperature, stats) if len(items) > 1 else self.score_plain(items, temperature, stats)
@@ -589,7 +615,8 @@ class DeciderEngine:
         return probs, stats
 
     def evaluate(self, payload: dict, *, layout: str = "state_first", isolated: bool | None = None,
-                 independent: bool = True, max_ctx_tokens: int | None = None, temperature: float | None = None):
+                 independent: bool = True, max_state_tokens: int | None = None,
+                 temperature: float | None = None):
         """Jev-shaped payload in, Jev-shaped answers out -- the same contract the nanojev path serves."""
         t0 = time.perf_counter()
         isolated = self.p.isolated_levels if isolated is None else isolated
@@ -605,7 +632,7 @@ class DeciderEngine:
             rendered = {qid: render_question(spec) for qid, spec in entry["questions"].items()}
             rows, index = plan_rows(rendered, isolated and independent)
             probs, stats = self.score_rows(entry["state"], rows, layout=layout,
-                                           temperature=temperature, max_ctx_tokens=max_ctx_tokens)
+                                           temperature=temperature, max_state_tokens=max_state_tokens)
             totals.questions += len(rendered)
             totals.rows += stats.rows
             totals.forwards += stats.forwards
@@ -618,6 +645,8 @@ class DeciderEngine:
             totals.prefix_len = max(totals.prefix_len, stats.prefix_len)
             totals.forked_rows = max(totals.forked_rows, stats.forked_rows)
             totals.cache_bytes = max(totals.cache_bytes, stats.cache_bytes)
+            totals.state_tokens = max(totals.state_tokens, stats.state_tokens)
+            totals.state_budget = stats.state_budget or totals.state_budget
             for name in ("t_prefix", "t_fork", "t_suffix"):
                 setattr(totals, name, getattr(totals, name) + getattr(stats, name))
             totals.states += 1
@@ -686,7 +715,7 @@ class DeciderEngine:
 
 # --------------------------------------------------------------------------- loading
 def load_predictor(checkpoint_dir, backend: str = "torch-mps", arch=None, precision: str = "bf16",
-                   max_ctx_tokens: int = DEFAULT_MAX_CTX_TOKENS, temperature: float | None = None):
+                   max_state_tokens: int | None = None, temperature: float | None = None):
     """Build the decider predictor. `upstream.load_predictor` is the way in; this is its decider branch."""
     return DeciderPredictor(checkpoint_dir, backend=backend, precision=precision, arch=arch,
-                            max_ctx_tokens=max_ctx_tokens, temperature=temperature)
+                            max_state_tokens=max_state_tokens, temperature=temperature)

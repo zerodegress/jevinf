@@ -31,6 +31,15 @@ os.environ.setdefault("TYPESAFE_API_KEY", ARGS.api_key)
 
 import urllib.request  # noqa: E402
 
+try:
+    with urllib.request.urlopen(f"{BASE}/health", timeout=30) as _r:
+        HEALTH = json.loads(_r.read())
+except Exception as exc:  # noqa: BLE001
+    sys.exit(f"/health did not answer with JSON at {BASE}: {type(exc).__name__}: {str(exc)[:200]}")
+ARRANGEMENT = HEALTH.get("arrangement")
+print(f"backend: architecture={HEALTH.get('architecture')} arrangement={ARRANGEMENT} "
+      f"limits={HEALTH.get('limits')} temperature_default={HEALTH.get('default_temperature')}\n")
+
 from typesafe_sdk import (  # noqa: E402
     Choice,
     Noul,
@@ -169,11 +178,12 @@ def main() -> int:
         native = post_native({"states": [{"id": "s", "state": STATE,
                                           "questions": NANO_QUESTIONS}]})
         ans = native["states"][0]["answers"]
-        same_noul = abs(ans["billing"]["p_true"] - res.nouls["billing"].noul) < 1e-6
-        same_urgent = abs(ans["urgent"]["p_true"] - res.nouls["urgent"].noul) < 1e-6
+        p_true = lambda qid: ans[qid].get("p_true", ans[qid].get("noul"))  # nanojev / decider vocabulary
+        same_noul = abs(p_true("billing") - res.nouls["billing"].noul) < 1e-6
+        same_urgent = abs(p_true("urgent") - res.nouls["urgent"].noul) < 1e-6
         same_choice = ans["team"]["choice"] == res.choices["team"].choice
         same_score = abs(ans["tone"]["score"] - res.scores["tone"].score) < 1e-6
-        print(f"\nnative endpoint cross-check: billing {ans['billing']['p_true']} "
+        print(f"\nnative endpoint cross-check: billing {p_true('billing')} "
               f"vs {res.nouls['billing'].noul}"
               f" | team {ans['team']['choice']} vs {res.choices['team'].choice}"
               f" | tone {ans['tone']['score']} vs {res.scores['tone'].score}")
@@ -186,9 +196,13 @@ def main() -> int:
         print("\nError contract:")
         long_state = ("The grid reports blocked cells, visited cells, the current heading and "
                       "the remaining distance to the goal for the active navigation episode. ") * 20
-        cases = [
-            ("path over 512 tokens (backend hard limit)",
-             dict(state=long_state, questions={"q": Noul(instructions="ok?")})),
+        cases = []
+        if ARRANGEMENT != "state-fork":
+            # Only the three-stage family caps a path at 512 tokens; the state-fork family's budget is
+            # two orders of magnitude larger, so the same request must succeed there (checked below).
+            cases.append(("path over 512 tokens (backend hard limit)",
+                          dict(state=long_state, questions={"q": Noul(instructions="ok?")})))
+        cases += [
             ("score with only 1 level (legal in Jev, the backend cannot serve it)",
              dict(state=STATE, questions={"q": Score(instructions="rate", criteria=["only"])})),
             ("choice with only 1 candidate",
@@ -206,6 +220,30 @@ def main() -> int:
                 check(label, True, f"422 {detail}")
             except Exception as exc:  # noqa: BLE001
                 check(label, False, f"{type(exc).__name__}: {str(exc)[:130]}")
+
+        if ARRANGEMENT == "state-fork":
+            # The complement of the case skipped above: a state far beyond that path cap is legal here,
+            # and the request must actually be served (not silently truncated without saying so).
+            # A client with more patience than the SDK's 10 s default: this family prefills at a few
+            # milliseconds per token, so a long state is a slow request rather than a wrong one.
+            big_state = long_state * 12
+            try:
+                import time as _time
+
+                t0 = _time.perf_counter()
+                with TypeSafeClient(timeout=300.0) as patient:
+                    res_long = patient.system_one(state=big_state, questions={"q": Noul(instructions="ok?")})
+                elapsed = _time.perf_counter() - t0
+                tokens = res_long.usage.input_tokens
+                check("a state far past the 512-token path cap is served, not refused",
+                      tokens > 600, f"usage.input_tokens={tokens} for {len(big_state)} characters")
+                # What a default client can actually reach, measured rather than guessed.
+                rate = tokens / elapsed if elapsed > 0 else 0.0
+                print(f"  · {tokens} tokens in {elapsed:.1f} s ({rate:.0f} tok/s): a client with the "
+                      f"SDK's default 10 s timeout reaches about {int(rate * 10)} tokens here")
+            except Exception as exc:  # noqa: BLE001
+                check("a state far past the 512-token path cap is served, not refused", False,
+                      f"{type(exc).__name__}: {str(exc)[:130]}")
 
         # Everything outside the server-side contract (an illegal question type) is rejected by
         # pydantic before it ever reaches the SDK/server

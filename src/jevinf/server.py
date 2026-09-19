@@ -46,6 +46,11 @@ from .engine import PrefixShareEngine
 from .jev_api import (
     CONFIDENCE_FORMULA,
     ALIAS_JEV,
+    ALIAS_LOCAL,
+    NANO_CHOICE_MAX,
+    NANO_MAX_PATH_TOKENS,
+    NANO_SCORE_MAX,
+    NANO_SCORE_MIN,
     JevRequestError,
     ModelMetadataList,
     SystemOneRequest,
@@ -65,7 +70,7 @@ STRATEGIES = ("fused_state", "fused_q", "two_stage", "per_question")
 HEADER_KNOBS = {
     "x-jevinf-strategy": "engine strategy (default fused_state); pure optimization tier, does not change answer semantics",
     "x-jevinf-max-rows": "row cap for a single forward pass (default 64); bounds memory when there are many candidates",
-    "x-jevinf-temperature": "softmax temperature (default 1.0); same meaning as upstream predict(temperature=)",
+    "x-jevinf-temperature": "softmax temperature (default: the loaded model's own value); same meaning as upstream predict(temperature=)",
     "x-jevinf-cold": "1 = force a cold compute. There is no cross-request cache today, so it is always cold; the switch is kept for future use",
 }
 
@@ -77,6 +82,98 @@ RESPONSE_STAT_HEADERS = (
     "x-jevinf-state-kv-bytes",
     "x-jevinf-wall-ms",
 )
+
+
+def family_facts(predictor, max_state_tokens: int | None = None) -> dict:
+    """What the loaded architecture can serve: its own name, limits, knobs and default temperature.
+
+    The two families differ in ways the service has to state rather than assume: which knob applies
+    (a strategy tier only exists for the three-stage arrangement), how large a request may be, and
+    what temperature a request gets when the caller does not ask for one. The last one matters:
+    nanojev was trained to be read at 1.0, while decider ships a fitted value and silently reading it
+    at 1.0 would de-calibrate every answer.
+    """
+    arch = predictor.arch
+    shared_limits = {"states": MAX_STATES, "questions": MAX_QUESTIONS}
+    if arch.arrangement == "state-fork":
+        return {
+            "arrangement": arch.arrangement,
+            "model_name": "decider-2b",
+            "temperature_default": float(predictor.temperature),
+            "precision": "bfloat16",
+            "limits": {**shared_limits, "paths": None},
+            "backend_limits": {
+                "state_tokens": int(max_state_tokens or predictor.max_state_tokens),
+                "choice_options": f"2-{predictor.max_options}",
+                "score_levels": f"{NANO_SCORE_MIN}-{NANO_SCORE_MAX}",
+                "temperature": predictor.temperature,
+            },
+            "knobs": {k: v for k, v in HEADER_KNOBS.items() if k != "x-jevinf-strategy"},
+            "description": (
+                f"Local decision model ({arch.name}): Qwen3.5-2B causal backbone with 18 of 24 layers "
+                f"linear attention, so its cache is part KV and part recurrent state; one forward pass "
+                f"scores every question. The state prefix is computed once and forked to one row per "
+                f"question. State budget {int(max_state_tokens or predictor.max_state_tokens)} tokens, "
+                f"and a state over it is refused rather than truncated; choice "
+                f"2-{predictor.max_options} options, score "
+                f"{NANO_SCORE_MIN}-{NANO_SCORE_MAX} levels, readout temperature {predictor.temperature}."
+            ),
+        }
+    return {
+        "arrangement": arch.arrangement,
+        "model_name": ALIAS_LOCAL,
+        "temperature_default": 1.0,
+        "precision": "fp32",
+        "limits": {**shared_limits, "paths": MAX_PATHS},
+        "backend_limits": {
+            "path_tokens": NANO_MAX_PATH_TOKENS,
+            "choice_options": f"2-{NANO_CHOICE_MAX}",
+            "score_levels": f"{NANO_SCORE_MIN}-{NANO_SCORE_MAX}",
+        },
+        "knobs": HEADER_KNOBS,
+        "description": (
+            "The underlying local decision model: deterministic, no autoregressive decoding, one "
+            f"batched forward pass returns a probability distribution per question. Path limit "
+            f"{NANO_MAX_PATH_TOKENS} tokens, choice 2-{NANO_CHOICE_MAX} options, score "
+            f"{NANO_SCORE_MIN}-{NANO_SCORE_MAX} levels."
+        ),
+    }
+
+
+def stat_headers(ex: dict, facts: dict) -> dict:
+    """Response stat headers, per family.
+
+    Only the numbers the loaded family actually reports are sent: a decider response has no strategy
+    tier or path count, and a nanojev response has no layout or fork statistics. Sending `None` for a
+    statistic that does not apply would be worse than sending nothing, because a client would read it
+    as data.
+    """
+    out = {
+        "x-jevinf-architecture": str(ex.get("architecture")),
+        "x-jevinf-wall-ms": f"{ex.get('wall_s', 0.0) * 1000:.1f}",
+    }
+    if facts["arrangement"] == "state-fork":
+        out.update({
+            "x-jevinf-layout": str(ex.get("layout")),
+            "x-jevinf-rows": str(ex.get("rows")),
+            "x-jevinf-prefix-sharing": "1" if ex.get("prefix_sharing") else "0",
+            "x-jevinf-prefix-len": str(ex.get("prefix_len")),
+            "x-jevinf-state-limit": str(facts["backend_limits"]["state_tokens"]),
+        })
+    else:
+        out.update({
+            "x-jevinf-strategy": str(ex.get("strategy")),
+            "x-jevinf-paths": str(ex.get("paths")),
+            "x-jevinf-state-kv-bytes": str(ex.get("state_kv_bytes")),
+            "x-jevinf-path-limit": str(facts["backend_limits"]["path_tokens"]),
+        })
+    for key, name in (("forwards", "x-jevinf-forwards"),
+                      ("computed_tokens", "x-jevinf-computed-tokens"),
+                      ("padded_tokens", "x-jevinf-padded-tokens"),
+                      ("baseline_tokens", "x-jevinf-path-tokens")):
+        if ex.get(key) is not None:
+            out[name] = str(ex[key])
+    return out
 
 
 class ApiError(Exception):
@@ -100,16 +197,24 @@ class EvaluateService:
 
     def __init__(self, checkpoint_dir, backend: str = DEFAULT_BACKEND, arch: str = DEFAULT_ARCH,
                  strategy: str = "fused_state",
-                 max_rows: int = 64, enforce_limits: bool = True, api_key: str | None = None):
+                 max_rows: int = 64, max_state_tokens: int | None = None,
+                 enforce_limits: bool = True, api_key: str | None = None):
         self.predictor = upstream.load_predictor(checkpoint_dir, backend=backend, arch=arch)
         self.arch = self.predictor.arch.name
+        if max_state_tokens and self.predictor.arch.arrangement != "state-fork":
+            raise ValueError(
+                f"--max-state-tokens only applies to the state-fork family; {self.arch!r} bounds a "
+                f"request by its candidate-path cap ({self.predictor.limit} tokens) instead"
+            )
+        self.facts = family_facts(self.predictor, max_state_tokens=max_state_tokens)
         self.default_strategy = strategy
         self.default_max_rows = max_rows
+        self.max_state_tokens = max_state_tokens
         self.enforce_limits = enforce_limits
         self.api_key = api_key
         self.lock = threading.Lock()
         self.calls = 0
-        self._engines: dict[tuple[str, int], PrefixShareEngine] = {}
+        self._engines: dict[tuple[str, int], Any] = {}
 
     # ------------------------------------------------------- Jev-compatible endpoints
     def system_one(self, req: SystemOneRequest) -> tuple[SystemOneResponse, dict]:
@@ -121,7 +226,7 @@ class EvaluateService:
                 raise JevRequestError(
                     f"questions {questions} > {MAX_QUESTIONS} (local backend limit)"
                 )
-            if paths > MAX_PATHS:
+            if self.facts["limits"]["paths"] is not None and paths > MAX_PATHS:
                 raise JevRequestError(
                     f"candidate paths {paths} > {MAX_PATHS} (local backend limit; "
                     f"Jev itself allows more, but memory runs out here first)"
@@ -131,7 +236,7 @@ class EvaluateService:
             engine = self._engine(self.default_strategy, self.default_max_rows)
             started = time.perf_counter()
             try:
-                out = engine.evaluate(nano_payload, temperature=1.0)
+                out = engine.evaluate(nano_payload, temperature=self.facts["temperature_default"])
             except (ValueError, AssertionError) as exc:
                 # upstream validator / paths over 512 tokens etc. → map to 422 per the Jev contract
                 raise JevRequestError(str(exc)) from None
@@ -141,7 +246,16 @@ class EvaluateService:
         return to_jev_response(req, out, ex), ex
 
     # ------------------------------------------------------------------ engine
-    def _engine(self, strategy: str, max_rows: int) -> PrefixShareEngine:
+    def _engine(self, strategy: str, max_rows: int):
+        """One engine per (strategy, rows) pair. Which arrangement is built is data, not a flag here."""
+        if self.facts["arrangement"] == "state-fork":
+            from .decider import DeciderEngine
+
+            key = ("state-fork", max_rows)
+            if key not in self._engines:
+                self._engines[key] = DeciderEngine(self.predictor, max_rows=max_rows,
+                                                   max_state_tokens=self.max_state_tokens)
+            return self._engines[key]
         key = (strategy, max_rows)
         if key not in self._engines:
             self._engines[key] = PrefixShareEngine(
@@ -151,47 +265,65 @@ class EvaluateService:
 
     # ------------------------------------------------------------------ main path
     def evaluate(self, payload: Any, *, strategy: str | None = None, max_rows: int | None = None,
-                 temperature: float = 1.0) -> tuple[dict, dict]:
+                 temperature: float | None = None) -> tuple[dict, dict]:
         # 1) upstream validator (strict)
         try:
             states = upstream.validate_request(payload)
         except (ValueError, TypeError) as exc:
             raise ApiError(400, type(exc).__name__, str(exc)) from None
 
-        # 2) limits (matching the Jev API)
+        # 2) limits (matching the Jev API; the family decides which of them can bite)
         questions, paths = count_paths(states)
+        limits = self.facts["limits"]
         if self.enforce_limits:
-            if len(states) > MAX_STATES:
+            if limits["states"] is not None and len(states) > limits["states"]:
                 raise ApiError(413, "LimitExceeded",
-                               f"states {len(states)} > {MAX_STATES}")
-            if questions > MAX_QUESTIONS:
+                               f"states {len(states)} > {limits['states']}")
+            if limits["questions"] is not None and questions > limits["questions"]:
                 raise ApiError(413, "LimitExceeded",
-                               f"questions {questions} > {MAX_QUESTIONS}")
-            if paths > MAX_PATHS:
-                raise ApiError(413, "LimitExceeded", f"paths {paths} > {MAX_PATHS}")
+                               f"questions {questions} > {limits['questions']}")
+            if limits["paths"] is not None and paths > limits["paths"]:
+                raise ApiError(413, "LimitExceeded", f"paths {paths} > {limits['paths']}")
 
-        strat = (strategy or self.default_strategy).strip()
-        if strat not in STRATEGIES:
-            raise ApiError(400, "BadStrategy",
-                           f"strategy must be one of {'/'.join(STRATEGIES)}, got {strat!r}")
+        # 3) knobs. A strategy tier only exists for the three-stage arrangement: asking for one on
+        # another family is refused rather than silently ignored, so nobody believes they set it.
+        if self.facts["arrangement"] == "state-fork":
+            if strategy:
+                raise ApiError(
+                    400, "BadStrategy",
+                    f"architecture {self.arch!r} is arranged by layout, not by strategy "
+                    f"(arrangement={self.facts['arrangement']!r}); x-jevinf-strategy does not apply",
+                )
+            strat = self.facts["arrangement"]
+        else:
+            strat = (strategy or self.default_strategy).strip()
+            if strat not in STRATEGIES:
+                raise ApiError(400, "BadStrategy",
+                               f"strategy must be one of {'/'.join(STRATEGIES)}, got {strat!r}")
         rows = int(max_rows) if max_rows else self.default_max_rows
         if rows < 1:
             raise ApiError(400, "BadMaxRows", "max-rows must be >= 1")
-        if not isinstance(temperature, (int, float)) or not (temperature > 0):
+        temp = self.facts["temperature_default"] if temperature is None else float(temperature)
+        if not (temp > 0):
             raise ApiError(400, "BadTemperature", "temperature must be a positive number")
 
-        # 3) inference (single-threaded, serialized)
+        # 4) inference (single-threaded, serialized)
         with self.lock:
             self.calls += 1
             engine = self._engine(strat, rows)
             started = time.perf_counter()
-            out = engine.evaluate(payload, temperature=float(temperature))
+            try:
+                out = engine.evaluate(payload, temperature=temp)
+            except ValueError as exc:
+                # A family-level refusal (a state over its budget, a slot with every option masked out,
+                # ...) is the client's input being out of range, not a server fault.
+                raise ApiError(413, "LimitExceeded", str(exc)) from None
             wall = time.perf_counter() - started
 
         ex = dict(out["execution"])
         # fill in the keys upstream predict() already has, so clients written against it can read them without code changes
         ex.update({
-            "precision": "fp32",
+            "precision": self.facts["precision"],
             "forward_autocast": "disabled",
             "candidate_paths": paths,
             "forward_passes": ex["forwards"],
@@ -208,19 +340,29 @@ class EvaluateService:
             "schema_version": "openjev-toy-inference-v1",
             "checkpoint": {
                 "directory": str(self.predictor.root),
-                "base_model": self.predictor.run_config.get("model"),
-                "base_revision": self.predictor.run_config.get("resolved_model_revision"),
-                "set_head": self.predictor.run_config["set_head"],
+                **self._checkpoint_facts(),
             },
             "temperature": {
-                "value": float(temperature),
+                "value": float(temp),
                 "fitted_by_this_command": False,
-                "note": "applies the given scalar explicitly; a default of 1 does not mean the model is calibrated.",
+                "note": ("applies the given scalar explicitly; the default is the loaded model's own "
+                         "value, which for this architecture is a fitted one"),
             },
             "execution": ex,
             "states": out["states"],
         }
         return body, ex
+
+    def _checkpoint_facts(self) -> dict:
+        """Provenance keys upstream predict() reports. Only filled in when the family actually knows them."""
+        run = getattr(self.predictor, "run_config", None)
+        if not run:
+            return {}
+        return {
+            "base_model": run.get("model"),
+            "base_revision": run.get("resolved_model_revision"),
+            "set_head": run.get("set_head"),
+        }
 
 
 def create_app(service: EvaluateService):
@@ -244,29 +386,29 @@ def create_app(service: EvaluateService):
             "engine": "jevinf",
             "version": __version__,
             "architecture": service.arch,
+            "arrangement": service.facts["arrangement"],
             "device": str(service.predictor.device),
             "checkpoint": str(service.predictor.root),
-            "default_strategy": service.default_strategy,
+            "precision": service.facts["precision"],
+            "default_strategy": (service.default_strategy
+                                 if service.facts["arrangement"] != "state-fork" else None),
             "default_max_rows": service.default_max_rows,
-            "limits": {"states": MAX_STATES, "questions": MAX_QUESTIONS,
-                       "paths": MAX_PATHS, "body_bytes": MAX_BODY_BYTES},
+            "default_temperature": service.facts["temperature_default"],
+            "limits": {**service.facts["limits"], "body_bytes": MAX_BODY_BYTES},
             "enforce_limits": service.enforce_limits,
             "calls": service.calls,
             "auth": "required" if service.api_key else "open",
             "jev_compat": {
                 "endpoints": ["POST /v1/systemone", "GET /v1/models"],
                 "alias": ALIAS_JEV,
+                "local_model": service.facts["model_name"],
                 "contract": "official OpenAPI 3.1 (api.typesafe.ai/openapi.json) + typesafe-sdk 0.7.0",
                 "confidence_formula": CONFIDENCE_FORMULA,
-                "backend_limits": {
-                    "path_tokens": 512,
-                    "choice_options": "2-255",
-                    "score_levels": "2-10",
-                },
+                "backend_limits": service.facts["backend_limits"],
             },
             "mps_allocated_bytes": (torch.mps.current_allocated_memory()
                                     if service.predictor.device.type == "mps" else None),
-            "knobs": HEADER_KNOBS,
+            "knobs": service.facts["knobs"],
         }
 
     bearer = HTTPBearer(auto_error=False)
@@ -297,23 +439,16 @@ def create_app(service: EvaluateService):
                 status_code=500,
             )
         response.headers["x-typesafe-request-id"] = uuid.uuid4().hex
-        for k, v in (
-            ("x-jevinf-strategy", str(ex.get("strategy"))),
-            ("x-jevinf-forwards", str(ex.get("forwards"))),
-            ("x-jevinf-computed-tokens", str(ex.get("computed_tokens"))),
-            ("x-jevinf-padded-tokens", str(ex.get("padded_tokens"))),
-            ("x-jevinf-path-tokens", str(ex.get("baseline_tokens"))),
-            ("x-jevinf-path-limit", "512"),
-            ("x-jevinf-confidence-formula", CONFIDENCE_FORMULA),
-            ("x-jevinf-wall-ms", f"{ex.get('wall_s', 0.0) * 1000:.1f}"),
-        ):
+        response.headers["x-jevinf-confidence-formula"] = CONFIDENCE_FORMULA
+        for k, v in stat_headers(ex, service.facts).items():
             response.headers[k] = v
         return body
 
     @app.get("/v1/models", response_model=ModelMetadataList)
     async def models_endpoint(creds: HTTPAuthorizationCredentials | None = Depends(bearer)):
         await _check_auth(creds)
-        return model_list()
+        return model_list(local_name=service.facts["model_name"],
+                          local_description=service.facts["description"])
 
     @app.post("/api/evaluate")
     async def evaluate(request: Request):
@@ -331,12 +466,15 @@ def create_app(service: EvaluateService):
                                 status_code=400)
 
         hdr = request.headers
-        try:
-            temperature = float(hdr.get("x-jevinf-temperature", 1.0))
-        except ValueError:
-            return JSONResponse({"error": "BadTemperature",
-                                 "message": "x-jevinf-temperature must be numeric"},
-                                status_code=400)
+        raw_temp = hdr.get("x-jevinf-temperature")
+        temperature = None  # absent = the loaded model's own value, not a hard-coded 1.0
+        if raw_temp is not None:
+            try:
+                temperature = float(raw_temp)
+            except ValueError:
+                return JSONResponse({"error": "BadTemperature",
+                                     "message": "x-jevinf-temperature must be numeric"},
+                                    status_code=400)
         rows_raw = hdr.get("x-jevinf-max-rows")
         try:
             max_rows = int(rows_raw) if rows_raw else None
@@ -360,15 +498,8 @@ def create_app(service: EvaluateService):
             return JSONResponse({"error": type(exc).__name__, "message": str(exc)},
                                 status_code=500)
 
-        headers = {
-            "x-jevinf-strategy": str(ex.get("strategy")),
-            "x-jevinf-forwards": str(ex.get("forwards")),
-            "x-jevinf-computed-tokens": str(ex.get("computed_tokens")),
-            "x-jevinf-paths": str(ex.get("paths")),
-            "x-jevinf-state-kv-bytes": str(ex.get("state_kv_bytes")),
-            "x-jevinf-wall-ms": f"{ex.get('wall_s', 0.0) * 1000:.1f}",
-            "x-jevinf-cold": "1",  # no cross-request cache today, so it is always a cold compute
-        }
+        headers = stat_headers(ex, service.facts)
+        headers["x-jevinf-cold"] = "1"  # no cross-request cache today, so it is always a cold compute
         return JSONResponse(body, headers=headers)
 
     return app

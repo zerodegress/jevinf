@@ -218,6 +218,18 @@ def _round_probs(probs: dict[str, float]) -> dict[str, float]:
     return {k: round(float(v), 6) for k, v in probs.items()}
 
 
+def _p_true(raw: dict[str, Any]) -> float:
+    """P(true) of a boolean question under either family's answer vocabulary.
+
+    `p_true` is nanojev's key, `noul` is decider's (its own system_one shape); the wire contract has
+    only `noul`, so this is one of the gaps this layer fills.
+    """
+    for key in ("p_true", "noul"):
+        if key in raw:
+            return float(raw[key])
+    raise KeyError(f"boolean answer carries neither p_true nor noul: {sorted(raw)}")
+
+
 def to_jev_response(
     req: SystemOneRequest,
     nano_out: dict[str, Any],
@@ -231,13 +243,13 @@ def to_jev_response(
 
     for qid, q in req.questions.items():
         raw = state_out["answers"][qid]
-        probs = list(raw["probabilities"].values())
 
         if isinstance(q, NoulQuestion):
             # Jev's noul answer carries no confidence (official docs are explicit: "Noul answers don't carry one")
-            answers[qid] = NoulAnswer(noul=round(float(raw["p_true"]), 6))
+            answers[qid] = NoulAnswer(noul=round(_p_true(raw), 6))
             continue
 
+        probs = list(raw["probabilities"].values())
         conf = round(confidence_from_probs(probs), 6)
         if isinstance(q, ChoiceQuestion):
             answers[qid] = ChoiceAnswer(
@@ -271,27 +283,26 @@ def to_jev_response(
 
 
 # ---------------------------------------------------------------- /v1/models
-def model_list() -> ModelMetadataList:
+def model_list(local_name: str = ALIAS_LOCAL, local_description: str | None = None) -> ModelMetadataList:
+    """The served catalogue. The second entry describes whichever local model is actually loaded."""
     return ModelMetadataList(
         models=[
             ModelMetadata(
                 name=ALIAS_JEV,
                 description=(
-                    "Alias served by the local jevinf engine: NanoJev (Qwen3-0.6B backbone "
-                    "+ decision head, 596M params, fp32 on Apple MPS). Wire-compatible with "
-                    "TypeSafe's Jev API; this backend runs a different model with its own calibration. "
-                    "Per-request hard limits: single state, every candidate path must fit in "
-                    f"{NANO_MAX_PATH_TOKENS} tokens (no silent truncation)."
+                    "Alias served by the local jevinf engine; wire-compatible with TypeSafe's Jev API. "
+                    "This backend runs a different model with its own calibration, so treat the "
+                    "distributions as comparable in shape, not in fit."
                 ),
                 release_date="2026-09-19",
             ),
             ModelMetadata(
-                name=ALIAS_LOCAL,
-                description=(
-                    "The underlying local decision model. Deterministic, no autoregressive "
-                    "decoding: one batched forward pass returns a probability distribution per "
-                    f"question. Path limit {NANO_MAX_PATH_TOKENS} tokens, choice 2–{NANO_CHOICE_MAX} "
-                    f"options, score {NANO_SCORE_MIN}–{NANO_SCORE_MAX} levels."
+                name=local_name,
+                description=local_description or (
+                    "The underlying local decision model: deterministic, no autoregressive decoding, "
+                    f"one forward pass returns a probability distribution per question. Path limit "
+                    f"{NANO_MAX_PATH_TOKENS} tokens, choice {NANO_CHOICE_MIN}–{NANO_CHOICE_MAX} options, "
+                    f"score {NANO_SCORE_MIN}–{NANO_SCORE_MAX} levels."
                 ),
                 release_date="2026-09-18",
             ),
