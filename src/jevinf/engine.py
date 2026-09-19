@@ -1,5 +1,9 @@
 """NanoJev prefix-sharing engine.
 
+Which model families this arrangement is defined for is data, not code: `arch.py` holds the
+structural facts (how attention runs, where answers are read from, what stays resident between
+segments) and `_check_arch` refuses anything whose facts do not fit the three stages below.
+
 Three-stage forward, all reusing the same upstream backbone object:
 
   Stage A  state segment       once per state (once per whole batch after uniquing)
@@ -75,6 +79,7 @@ class PrefixShareEngine:
         if strategy == "fused":
             strategy = "fused_state"  # default mode: batch all paths of the same state together
         self.p = predictor
+        self.arch = self._check_arch(predictor)
         self.model = predictor.model
         self.tok = predictor.tokenizer
         self.device = predictor.device
@@ -90,6 +95,27 @@ class PrefixShareEngine:
         self.max_rows = max(1, max_rows)
 
     # ---------------------------------------------------------------- low level
+    @staticmethod
+    def _check_arch(predictor):
+        """The three-stage arrangement below is only defined for a causal backbone with per-token KV.
+
+        Which families satisfy that is recorded in `arch.py`; anything else is refused here rather
+        than arranged anyway. A predictor that carries no tag was not loaded through
+        `upstream.load_predictor`, so the engine cannot tell what it is holding.
+        """
+        spec = getattr(predictor, "arch", None)
+        if spec is None:
+            raise ValueError(
+                "predictor carries no architecture tag; load it through upstream.load_predictor"
+            )
+        if spec.attention != "causal" or spec.cache != "kv":
+            raise ValueError(
+                f"architecture {spec.name!r} is not one this engine arranges yet: prefix sharing "
+                f"needs a causal backbone with per-token KV (got attention={spec.attention!r}, "
+                f"cache={spec.cache!r})"
+            )
+        return spec
+
     @staticmethod
     def cache_bytes(kv) -> int:
         total = 0
@@ -380,6 +406,7 @@ class PrefixShareEngine:
             "schema_version": "jevinf-v0",
             "execution": {
                 "engine": "jevinf",
+                "architecture": self.arch.name,
                 "strategy": self.strategy,
                 "device": str(self.device),
                 "parameter_storage": "float32",

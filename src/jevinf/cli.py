@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 
 from . import upstream
+from .arch import ARCHITECTURES, DEFAULT_ARCH
 from .backend import BACKENDS, DEFAULT_BACKEND
 from .bench import compare, head_selfcheck, run_bench, summarize
 from .engine import PrefixShareEngine
@@ -23,7 +24,7 @@ def _load_payload(path: str | None, split: str | None, states: int | None) -> di
 
 def _predictor(args):
     return upstream.load_predictor(
-        checkpoint_dir=args.model, backend=args.backend, precision="fp32"
+        checkpoint_dir=args.model, backend=args.backend, arch=args.arch, precision="fp32"
     )
 
 
@@ -102,6 +103,7 @@ def cmd_serve(args) -> int:
     service = EvaluateService(
         checkpoint_dir=args.model,
         backend=args.backend,
+        arch=args.arch,
         strategy=args.strategy,
         max_rows=args.max_rows,
         enforce_limits=not args.no_limits,
@@ -109,7 +111,7 @@ def cmd_serve(args) -> int:
     )
     app = create_app(service)
     print(f"jevinf serve: device={service.predictor.device} checkpoint={service.predictor.root} "
-          f"strategy={args.strategy} max_rows={args.max_rows} "
+          f"arch={service.arch} strategy={args.strategy} max_rows={args.max_rows} "
           f"limits={'on' if service.enforce_limits else 'off'} "
           f"auth={'required' if args.api_key else 'open'} "
           f"strategies={','.join(STRATEGIES)}", flush=True)
@@ -124,6 +126,8 @@ def main(argv: list[str] | None = None) -> int:
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument("--backend", default=DEFAULT_BACKEND, choices=list(BACKENDS),
                         help="compute backend; only torch-mps is implemented today")
+    common.add_argument("--arch", default=DEFAULT_ARCH, choices=list(ARCHITECTURES),
+                        help="model architecture; only nanojev is wired up today")
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     s = sub.add_parser("selfcheck", parents=[common],

@@ -64,6 +64,18 @@ Backends are chosen with `--backend`:
 
 Only `torch-mps` is wired up; the other three refuse to run.
 
+The model family is chosen with `--arch`:
+
+| Architecture | Backbone | Status |
+|---|---|---|
+| `nanojev` | Qwen3-0.6B causal decoder plus a trained decision head | default |
+| `laya` | ModernBERT encoder, state and options in one sequence | declared |
+| `decider-2b` | Qwen3.5-2B causal decoder, 3 of every 4 layers linear attention | declared |
+
+Only `nanojev` is wired up; the other two refuse to run. `src/jevinf/arch.py` records what each
+family is structurally — how attention runs, where answers are read from, what has to stay resident
+between segments — because those facts are what decide whether the three-stage arrangement applies.
+
 Checks, cheapest first:
 
 ```bash

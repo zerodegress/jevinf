@@ -11,7 +11,8 @@ import importlib.util
 import sys
 from pathlib import Path
 
-from .backend import DEFAULT_BACKEND, resolve
+from .arch import DEFAULT_ARCH, resolve as resolve_arch
+from .backend import DEFAULT_BACKEND, resolve as resolve_backend
 
 DEFAULT_SRC = Path(__file__).resolve().parents[2] / "vendor" / "nanojev"
 
@@ -53,12 +54,20 @@ def prepare_examples(payload, tokenizer, max_length):
     return predict_module().prepare_examples(payload, tokenizer, max_length)
 
 
-def load_predictor(checkpoint_dir, backend=DEFAULT_BACKEND, precision="fp32", src: Path = DEFAULT_SRC):
-    """Construct the upstream DecisionPredictor. It is this prototype's oracle and weight carrier."""
+def load_predictor(checkpoint_dir, backend: str = DEFAULT_BACKEND, arch: str = DEFAULT_ARCH,
+                   precision="fp32", src: Path = DEFAULT_SRC):
+    """Construct the upstream DecisionPredictor. It is this prototype's oracle and weight carrier.
+
+    The architecture tag is resolved here and stamped on the predictor, so the engine can tell which
+    family it is arranging without being told twice.
+    """
+    spec = resolve_arch(arch)
     module = predict_module(src)
-    return module.DecisionPredictor(
-        str(checkpoint_dir), device_name=resolve(backend).device, precision=precision
+    predictor = module.DecisionPredictor(
+        str(checkpoint_dir), device_name=resolve_backend(backend).device, precision=precision
     )
+    predictor.arch = spec
+    return predictor
 
 
 def read_split(path, limit_states: int | None = None) -> dict:

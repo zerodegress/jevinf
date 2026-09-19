@@ -40,6 +40,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from starlette.concurrency import run_in_threadpool
 
 from . import __version__, upstream
+from .arch import DEFAULT_ARCH
 from .backend import DEFAULT_BACKEND
 from .engine import PrefixShareEngine
 from .jev_api import (
@@ -97,9 +98,11 @@ def count_paths(states: list[dict]) -> tuple[int, int]:
 class EvaluateService:
     """Wrap the engine as a service: validation + limits + knobs + stats. The engine itself knows nothing about HTTP."""
 
-    def __init__(self, checkpoint_dir, backend: str = DEFAULT_BACKEND, strategy: str = "fused_state",
+    def __init__(self, checkpoint_dir, backend: str = DEFAULT_BACKEND, arch: str = DEFAULT_ARCH,
+                 strategy: str = "fused_state",
                  max_rows: int = 64, enforce_limits: bool = True, api_key: str | None = None):
-        self.predictor = upstream.load_predictor(checkpoint_dir, backend=backend)
+        self.predictor = upstream.load_predictor(checkpoint_dir, backend=backend, arch=arch)
+        self.arch = self.predictor.arch.name
         self.default_strategy = strategy
         self.default_max_rows = max_rows
         self.enforce_limits = enforce_limits
@@ -240,6 +243,7 @@ def create_app(service: EvaluateService):
             "status": "ok",
             "engine": "jevinf",
             "version": __version__,
+            "architecture": service.arch,
             "device": str(service.predictor.device),
             "checkpoint": str(service.predictor.root),
             "default_strategy": service.default_strategy,
