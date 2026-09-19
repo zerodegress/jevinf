@@ -1,0 +1,50 @@
+diff --git a/scripts/predict_toy_decisions.py b/scripts/predict_toy_decisions.py
+index 06e7c26..470a950 100644
+--- a/scripts/predict_toy_decisions.py
++++ b/scripts/predict_toy_decisions.py
+@@ -197,12 +197,20 @@ class DecisionPredictor:
+             from torch._native import triton_utils
+             triton_utils.deregister_op_overrides()
+         device = torch.device(device_name)
+-        if device.type != "cuda" or not torch.cuda.is_available():
+-            raise ValueError("此原型推理入口需要可用CUDA设备；本命令未启用CPU或远程回退")
+-        torch.cuda.set_device(device)
+-        if precision == "bf16" and not torch.cuda.is_bf16_supported():
+-            raise ValueError("当前CUDA设备不支持本checkpoint推理配置所需的BF16")
+-        torch.backends.cuda.matmul.allow_tf32 = False
++        # [local patch] Upstream hard-requires CUDA. Allow mps/cpu and keep the original
++        # CUDA checks in the cuda branch.
++        if device.type == "cuda":
++            if not torch.cuda.is_available():
++                raise ValueError("此原型推理入口需要可用CUDA设备；本命令未启用CPU或远程回退")
++            torch.cuda.set_device(device)
++            if precision == "bf16" and not torch.cuda.is_bf16_supported():
++                raise ValueError("当前CUDA设备不支持本checkpoint推理配置所需的BF16")
++            torch.backends.cuda.matmul.allow_tf32 = False
++        elif device.type not in {"mps", "cpu"}:
++            raise ValueError("device must be one of cuda / mps / cpu")
++        else:
++            # [local patch] Non-CUDA: weights are cast below instead of using autocast.
++            pass
+     
+         tokenizer = AutoTokenizer.from_pretrained(str(paths["tokenizer"]), local_files_only=True,
+                                                  trust_remote_code=False)
+@@ -226,6 +234,9 @@ class DecisionPredictor:
+         model.load_state_dict(weights, strict=True)
+         del weights
+         model.to(device=device, dtype=torch.float32)
++        # [local patch] Non-CUDA bf16: cast weights/compute to bf16 directly, no autocast.
++        if precision == "bf16" and device.type != "cuda":
++            model.to(dtype=torch.bfloat16)
+         model.eval()
+         self.model = model
+         self.tokenizer = tokenizer
+@@ -254,7 +265,7 @@ class DecisionPredictor:
+         outputs = {state["id"]: {"id": state["id"], "answers": {}} for state in states}
+         with torch.inference_mode():
+             for batch in batches:
+-                with torch.autocast("cuda", dtype=torch.bfloat16, enabled=precision == "bf16"):
++                with torch.autocast("cuda", dtype=torch.bfloat16, enabled=(precision == "bf16" and device.type == "cuda")):
+                     logits, _ = model(batch, tokenizer.pad_token_id)
+                 for example, values in zip(batch, logits):
+                     k = len(example["candidate_ids"])

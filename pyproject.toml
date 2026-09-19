@@ -1,0 +1,26 @@
+[project]
+name = "jevinf"
+version = "0.1.0"
+description = "Inference engine for Jev-style decision models: prefix sharing + KV residency"
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = [
+    "fastapi>=0.121",
+    "safetensors>=0.8.0",
+    "torch>=2.14.0",
+    "transformers>=5.17.0",
+    "uvicorn>=0.38",
+]
+
+[project.scripts]
+jevinf = "jevinf.cli:main"
+
+[dependency-groups]
+# Conformance testing only: the official SDK validates responses with its own pydantic
+# models, so "the official client works" is itself the strictest conformance check.
+# Not a runtime dependency.
+dev = ["typesafe-sdk>=0.7"]
+
+[build-system]
+requires = ["uv_build>=0.12.3,<0.13.0"]
+build-backend = "uv_build"
