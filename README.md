@@ -68,13 +68,14 @@ The model family is chosen with `--arch`:
 
 | Architecture | Backbone | Status |
 |---|---|---|
-| `nanojev` | Qwen3-0.6B causal decoder plus a trained decision head | default |
-| `laya` | ModernBERT encoder, state and options in one sequence | declared |
-| `decider-2b` | Qwen3.5-2B causal decoder, 3 of every 4 layers linear attention | declared |
+| `nanojev` | Qwen3-0.6B causal decoder plus a trained decision head | default, three-stage prefix sharing |
+| `decider-2b` | Qwen3.5-2B causal decoder, 3 of every 4 layers linear attention (KV + recurrent cache) | wired up, one state prefix forked to a row per question |
+| `laya` | ModernBERT encoder, state and options in one sequence | declared only, refuses to run |
 
-Only `nanojev` is wired up; the other two refuse to run. `src/jevinf/arch.py` records what each
+`nanojev` and `decider-2b` are wired up; `laya` refuses to run. `src/jevinf/arch.py` records what each
 family is structurally — how attention runs, where answers are read from, what has to stay resident
-between segments — because those facts are what decide whether the three-stage arrangement applies.
+between segments — because those facts are what decide which arrangement applies (`engine.py` for the
+three-stage one, `decider.py` for the fork).
 
 Checks, cheapest first:
 

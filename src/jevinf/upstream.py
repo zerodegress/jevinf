@@ -56,12 +56,20 @@ def prepare_examples(payload, tokenizer, max_length):
 
 def load_predictor(checkpoint_dir, backend: str = DEFAULT_BACKEND, arch: str = DEFAULT_ARCH,
                    precision="fp32", src: Path = DEFAULT_SRC):
-    """Construct the upstream DecisionPredictor. It is this prototype's oracle and weight carrier.
+    """Construct the predictor for the requested architecture. It is this prototype's oracle and weight carrier.
 
     The architecture tag is resolved here and stamped on the predictor, so the engine can tell which
-    family it is arranging without being told twice.
+    family it is arranging without being told twice. Which loader runs is read off `arrangement`, not
+    off a branch on the name.
     """
     spec = resolve_arch(arch)
+    if spec.arrangement == "state-fork":
+        from .decider import load_predictor as load_decider
+
+        # This checkpoint is bf16 and its readout is bf16, so fp32 would double the resident weights for
+        # nothing; the precision argument is accepted and mapped rather than rejected.
+        return load_decider(checkpoint_dir, backend=backend, arch=spec,
+                            precision=precision if precision in ("bf16", "fp16") else "bf16")
     module = predict_module(src)
     predictor = module.DecisionPredictor(
         str(checkpoint_dir), device_name=resolve_backend(backend).device, precision=precision

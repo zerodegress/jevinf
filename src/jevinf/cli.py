@@ -31,6 +31,12 @@ def _predictor(args):
 def cmd_selfcheck(args) -> int:
     pred = _predictor(args)
     payload = _load_payload(args.input, args.split, args.states)
+    if pred.arch.arrangement == "state-fork":
+        from .decider import DeciderEngine
+
+        engine = DeciderEngine(pred, max_rows=args.max_rows, prefix_chunk=args.prefix_chunk)
+        print(json.dumps(engine.selfcheck(payload), ensure_ascii=False, indent=1))
+        return 0
     print(json.dumps(head_selfcheck(pred, payload), ensure_ascii=False, indent=1))
     return 0
 
@@ -58,8 +64,15 @@ def cmd_bench(args) -> int:
 def cmd_eval(args) -> int:
     pred = _predictor(args)
     payload = _load_payload(args.input, args.split, args.states)
-    eng = PrefixShareEngine(pred, strategy=args.strategy, head_chunk=args.head_chunk)
-    out = eng.evaluate(payload)
+    if pred.arch.arrangement == "state-fork":
+        from .decider import DeciderEngine
+
+        eng = DeciderEngine(pred, max_rows=args.max_rows, prefix_chunk=args.prefix_chunk,
+                            max_ctx_tokens=args.max_ctx_tokens or None)
+        out = eng.evaluate(payload, layout=args.layout, temperature=args.temperature or None)
+    else:
+        eng = PrefixShareEngine(pred, strategy=args.strategy, head_chunk=args.head_chunk)
+        out = eng.evaluate(payload)
     text = json.dumps(out, ensure_ascii=False, indent=1, allow_nan=False)
     if args.out:
         Path(args.out).parent.mkdir(parents=True, exist_ok=True)
@@ -127,11 +140,17 @@ def main(argv: list[str] | None = None) -> int:
     common.add_argument("--backend", default=DEFAULT_BACKEND, choices=list(BACKENDS),
                         help="compute backend; only torch-mps is implemented today")
     common.add_argument("--arch", default=DEFAULT_ARCH, choices=list(ARCHITECTURES),
-                        help="model architecture; only nanojev is wired up today")
+                        help="model architecture; nanojev and decider-2b are wired up, laya is declared only")
+
+    family = argparse.ArgumentParser(add_help=False)
+    family.add_argument("--max-rows", type=int, default=32,
+                        help="decider-2b: how many rows one batched forward may carry")
+    family.add_argument("--prefix-chunk", type=int, default=1024,
+                        help="decider-2b: prefix tokens per forward (0 = one shot)")
     sub = parser.add_subparsers(dest="cmd", required=True)
 
-    s = sub.add_parser("selfcheck", parents=[common],
-                       help="isolated check that the decision head matches upstream")
+    s = sub.add_parser("selfcheck", parents=[common, family],
+                       help="isolated check that the engine matches its reference")
     s.add_argument("-m", "--model", required=True, help="checkpoint directory (weights)")
     s.add_argument("--input", default=None)
     s.add_argument("--split", default=None, help="dev split (jsonl)")
@@ -155,13 +174,19 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("--out", default=None)
     s.set_defaults(func=cmd_bench)
 
-    s = sub.add_parser("eval", parents=[common], help="run a single payload through the engine")
+    s = sub.add_parser("eval", parents=[common, family], help="run a single payload through the engine")
     s.add_argument("-m", "--model", required=True, help="checkpoint directory (weights)")
     s.add_argument("--input", default=None)
     s.add_argument("--split", default=None, help="dev split (jsonl)")
     s.add_argument("--states", type=int, default=8)
     s.add_argument("--strategy", default="fused")
     s.add_argument("--head-chunk", type=int, default=128)
+    s.add_argument("--layout", default="state_first",
+                   help="decider-2b: layout of one state's questions (state_first today)")
+    s.add_argument("--max-ctx-tokens", type=int, default=0,
+                   help="decider-2b: state token budget (0 = the family default)")
+    s.add_argument("--temperature", type=float, default=0.0,
+                   help="decider-2b: override the calibrated readout temperature (0 = the card's value)")
     s.add_argument("--out", default=None)
     s.set_defaults(func=cmd_eval)
 
