@@ -2,8 +2,9 @@
 
 [Back to README](../README.md)
 
-Every timing below was measured on MPS (Apple silicon). A speedup is a property of the arrangement
-*and* the device, so a CUDA host must re-measure rather than quote these.
+Every timing is MPS (Apple silicon) unless it is marked CUDA. A speedup is a property of the
+arrangement *and* the device, so a host of either kind must re-measure rather than quote the other's
+figures.
 
 ## How the forwards are arranged
 
@@ -35,6 +36,18 @@ which is what a client actually feels. Engine efficiency is identical under both
 
 **Full dev split (120 states / 360 questions / 898 paths):** baseline 84.2 s | `fused_state` 37.0 s →
 2.27× | `two_stage` 40.9 s → 2.06× | `per_question` 77.5 s → 1.05×.
+
+**The same dev split on CUDA** (fp32, 2026-09-20): baseline 35.93 s |
+`fused_state` 17.36 s → 2.07× | `fused_q` 19.71 s → 1.82× | `two_stage` 24.44 s → 1.47×, agreement
+100.00% on all three (TV median 7.5e-08 … 8.6e-08, KL mean ≤ 2.6e-09). Every strategy still beats the
+baseline, `fused_state` still leads and `two_stage` still trails — but the magnitude does not carry
+over: `fused_state` is 2.27× on MPS and 2.07× here. (That run measured `fused_q` in place of
+`per_question`.)
+
+**Single request on CUDA**, the same shape as the table above (32 states / 96 questions / 245 paths):
+baseline 9.30 s | `fused_state` 4.33 s → 2.15× | `fused_q` 5.00 s → 1.86× | `two_stage` 6.30 s →
+1.48×, agreement 100.00%. `two_stage` trails furthest here; its 360 stage-B forwards account for
+2.31 s of its 5.91 s wall, where `fused_state` runs no stage B at all.
 
 **The speedup depends strongly on shape** (8-shape sweep, agreement always 100%): from 1.98× for
 single-question states up to 5.69× for long states. The larger the reuse radius (longer state

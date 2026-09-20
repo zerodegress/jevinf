@@ -12,8 +12,9 @@ engine.
 computes each prefix once. On top of that it serves the Jev wire contract (`POST /v1/systemone`) and
 an engine-native debug endpoint (`POST /api/evaluate`).
 
-Measured result: **2.57×** on a single API-sized request, **2.27×** end to end on the dev split, at
-**100% argmax agreement**. Numbers and the shape dependence behind them: [docs/strategies.md](docs/strategies.md).
+Measured result on MPS: **2.57×** on a single API-sized request, **2.27×** end to end on the dev split,
+at **100% argmax agreement**; the same two shapes measure 2.15× and 2.07× on CUDA. Numbers and the
+shape dependence behind them: [docs/strategies.md](docs/strategies.md).
 
 Three model families are wired up, dispatched on `arch.arrangement` — never on the model name:
 
@@ -134,10 +135,16 @@ uv run jevinf eval   -m models/NanoJev --split data/dev.jsonl --out data/mine.js
 uv run jevinf compare --reference data/base.json --candidate data/mine.json
 ```
 
-**Pass criteria: `argmax_agreement` 100%, TV median 0.** The primary performance metric is
-end-to-end wall-clock on the dev split; `argmax + TV/KL` is the comparison caliber. Any change to
-forward arrangement must be justified with these numbers — a speedup claim without an agreement
-number is not a result.
+**Pass criteria: `argmax_agreement` 100%, TV median 0.** On MPS the dev split gives exactly that. On
+CUDA the engine-against-oracle comparison measures TV median 7.5e-08 … 8.6e-08 while
+`argmax_agreement` stays 1.0. That gap is not run-to-run noise: the service layer cross-checked
+against a CUDA-generated golden agrees exactly (TV median 0.00e+00), so it separates the two
+implementations, not two runs. A non-zero TV against the upstream oracle on CUDA is expected;
+`argmax` 100% is never negotiable.
+
+The primary performance metric is end-to-end wall-clock on the dev split; `argmax + TV/KL` is the
+comparison caliber. Any change to forward arrangement must be justified with these numbers — a
+speedup claim without an agreement number is not a result.
 
 Config sweeps and probes live in `scripts/` and are facts-only or measurement-only; they are not part
 of the gate. `scripts/api_smoke.py` and `scripts/jev_conformance.py` assume the `nanojev` family in

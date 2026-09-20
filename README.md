@@ -6,9 +6,10 @@ up today.
 
 > Chinese version: [README_CN.md](README_CN.md)
 
-Measured throughput: **2.57×** on a single API-sized request (25.80 s → 10.06 s) and **2.27×** end to
-end on the dev split (84.2 s → 37.0 s), at 100% argmax agreement. How the forwards are arranged, and
-the shape dependence behind those numbers, is in
+Measured throughput on MPS: **2.57×** on a single API-sized request (25.80 s → 10.06 s) and **2.27×**
+end to end on the dev split (84.2 s → 37.0 s), at 100% argmax agreement. The same two shapes measure
+**2.15×** and **2.07×** on CUDA — the speedup comes from the arrangement, not the device. How the
+forwards are arranged, and the shape dependence behind those numbers, is in
 [Strategies and measurements](docs/strategies.md).
 
 ## Quick start
