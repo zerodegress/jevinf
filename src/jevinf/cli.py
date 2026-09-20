@@ -139,11 +139,17 @@ def cmd_serve(args) -> int:
         api_key=args.api_key,
     )
     app = create_app(service)
-    knob = {"state-fork": "layout=state_first",
-            "single-path": f"sequence_limit={service.predictor.max_len} crop_state={args.crop_state}"}.get(
-        service.facts["arrangement"], f"strategies={','.join(STRATEGIES)}")
+    # Built by branch, not as a dict of all three: `max_len` exists only on the single-path family, so
+    # materialising that string up front is an AttributeError on the other two before the service starts.
+    arrangement = service.facts["arrangement"]
+    if arrangement == "state-fork":
+        knob = "layout=state_first"
+    elif arrangement == "single-path":
+        knob = f"sequence_limit={service.predictor.max_len} crop_state={args.crop_state}"
+    else:
+        knob = f"strategies={','.join(STRATEGIES)}"
     print(f"jevinf serve: device={service.predictor.device} checkpoint={service.predictor.root} "
-          f"arch={service.arch} arrangement={service.facts['arrangement']} {knob} "
+          f"arch={service.arch} arrangement={arrangement} {knob} "
           f"max_rows={args.max_rows} temperature={service.facts['temperature_default']} "
           f"limits={'on' if service.enforce_limits else 'off'} "
           f"auth={'required' if args.api_key else 'open'}", flush=True)
