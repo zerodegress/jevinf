@@ -42,6 +42,12 @@ load:
 uv sync --group decider-kernels       # flash-linear-attention + fla-core + einops
 ```
 
+The group is Linux-only, by marker. `flash-linear-attention` is pure Python, so uv would install it
+anywhere, but its kernels import `triton`, and the only thing in this lock that declares `triton` is
+torch, with `sys_platform == "linux"` — triton publishes manylinux wheels only. Without the marker the
+group installed happily on macOS and failed at import, which is the worse failure. Off Linux it is now
+a no-op.
+
 Verified on the CUDA host: the `chunk_gated_delta_rule` warning disappears and `decider_parity` still
 passes (argmax 10/10, `max |Δp|` 0.0119, the same as the fallback run), so the fused kernel shifts the
 numbers by ≲0.005 without moving an answer.

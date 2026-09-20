@@ -62,7 +62,8 @@ not a runtime dependency:
 uv sync --group decider-kernels
 ```
 
-[AGENTS.md](AGENTS.md#environment-and-setup) records why `causal-conv1d` is not in that group.
+The group is Linux-only — the kernels need triton, which torch ships on Linux — and
+[AGENTS.md](AGENTS.md#environment-and-setup) records why `causal-conv1d` is not in it.
 
 **Keep the project and `.venv` on a filesystem that supports symlinks and POSIX permissions.** A uv
 `.venv` on a filesystem that lacks them (ExFAT, for instance) breaks; keep build artifacts on a

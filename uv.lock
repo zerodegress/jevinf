@@ -341,7 +341,7 @@ dependencies = [
 
 [package.dev-dependencies]
 decider-kernels = [
-    { name = "flash-linear-attention" },
+    { name = "flash-linear-attention", marker = "sys_platform == 'linux'" },
 ]
 dev = [
     { name = "typesafe-sdk" },
@@ -357,7 +357,7 @@ requires-dist = [
 ]
 
 [package.metadata.requires-dev]
-decider-kernels = [{ name = "flash-linear-attention", specifier = ">=0.5.2" }]
+decider-kernels = [{ name = "flash-linear-attention", marker = "sys_platform == 'linux'", specifier = ">=0.5.2" }]
 dev = [{ name = "typesafe-sdk", specifier = ">=0.7" }]
 
 [[package]]

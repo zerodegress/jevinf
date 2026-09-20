@@ -59,7 +59,8 @@ uv run jevinf --help
 uv sync --group decider-kernels
 ```
 
-`causal-conv1d` 为什么不在这个组里，[AGENTS.md](AGENTS.md#environment-and-setup) 有记录。
+该组仅限 Linux——融合内核依赖 triton，而 torch 只在 Linux 上带 triton；`causal-conv1d` 为什么不在
+组里，[AGENTS.md](AGENTS.md#environment-and-setup) 有记录。
 
 **项目与 `.venv` 都必须放在支持符号链接与 POSIX 权限的文件系统上。** 缺这两样的文件系统（例如
 ExFAT）放 uv 的 `.venv` 会坏 —— 构建产物也放普通本地盘。本原型针对 Apple silicon（MPS）与统一
