@@ -50,8 +50,51 @@ Neither the weights nor the evaluation split is committed. Every command needs t
 - `--split <jsonl>` — evaluation split, e.g. `data/dev.jsonl` (rows: `id`, `state`, `questions`, plus
   `teacher` gold that [upstream.py](src/jevinf/upstream.py) trims away before inference)
 
-If a command fails on a missing directory, this is why — ask the user for the weights rather than
-inventing fixtures.
+`models/` and `data/` are ignored at the repository root, so nothing fetched here can be committed.
+Fetch the published artifacts rather than inventing fixtures — every agreement number in
+[docs/](docs/) is measured against the real split, so a synthesised one proves nothing.
+
+Nothing weight-like may be committed, and not only under those two directories — [.gitignore](.gitignore)
+also blocks the weight formats (`*.safetensors`, `*.gguf`, `*.pt`, …) and the checkpoint accessory
+filenames (`tokenizer.json`, `chat_template.jinja`, …) wherever they land, because the snapshotter
+refuses only files over 1 MiB and would otherwise commit a 313 KiB tokenizer silently. Audit the whole
+invariant with
+
+```bash
+git ls-files | git check-ignore --stdin --no-index     # must print nothing
+```
+
+which reports any tracked path matching any ignore rule. Measured 2026-09-20: 98 blobs totalling
+996 KB, largest 128 KB (`uv.lock`) — this repository stores no weights and no checkpoint accessories.
+
+**NanoJev stage 2.** The root of the published checkpoint is stage 2, and that is the pair these docs
+were measured on; `stage1/` is a different model, whose dev split is 184 states / 552 questions rather
+than 120 / 360. Identity, verified 2026-09-20 — the LFS tensors against the dataset manifest's declared
+digests, the rest byte for byte against the model repo:
+
+| File | sha256 |
+|---|---|
+| `models/NanoJev/best.safetensors` | `fff62d1412685c1714eaa386acb603f9690371fb3cc8ad03dc41319302597c28` |
+| `models/NanoJev/config.json` | `8139aff38992e200c92de038169b1924412dc7a73c72fc90d86d3db4734fc6c1` |
+| `models/NanoJev/backbone_config/config.json` | `30c011854471509747858ac07ffb8a4dab2bc6c04035b184729b69500c557c54` |
+| `models/NanoJev/tokenizer/tokenizer.json` | `be75606093db2094d7cd20f3c2f385c212750648bd6ea4fb2bf507a6a4c55506` |
+| `models/NanoJev/tokenizer/tokenizer_config.json` | `1cc816812993bff176eb4f7495433b736f06fba9b6e7b05cac7b4a1780650c95` |
+| `models/NanoJev/tokenizer/chat_template.jinja` | `a55ee1b1660128b7098723e0abcd92caa0788061051c62d51cbe87d9cf1974d8` |
+| `data/dev.jsonl` (320394 B) | `e7fb075f4d5a27f2c7675dabd6404c1b0faff4d8615a18b5ac1f3a74ca1ff760` |
+
+```bash
+uv run hf download C-Tianyu/NanoJev --revision 4a19595eada0857133c0d2be024f879a4077054b \
+  config.json best.safetensors backbone_config/config.json \
+  tokenizer/tokenizer.json tokenizer/tokenizer_config.json tokenizer/chat_template.jinja \
+  --local-dir models/NanoJev
+curl -sSL -o data/dev.jsonl \
+  "https://huggingface.co/datasets/C-Tianyu/NanoJev-Data/resolve/87061eb91e8fc687e9b046454afdcc5551e3eff7/stage2/dev.jsonl"
+```
+
+`config.json` doubles as the training-run record: its `data_sha256` names the stage-2 training input,
+and its own digest equals the dataset manifest's `training_config_sha256`. The split is 313 KiB —
+**under** the 1 MiB snapshot guard — which is why `data/` is ignored at the root rather than by a rule
+inside the directory. `decider-2b` and `laya` are not covered here; ask the user for those.
 
 Upstream NanoJev is vendored at [vendor/nanojev/](vendor/nanojev/) (MIT, pinned commit `71a513b`) and
 loaded **by path via importlib** in [upstream.py](src/jevinf/upstream.py). It carries one local patch,

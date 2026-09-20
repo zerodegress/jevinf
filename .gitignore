@@ -8,3 +8,34 @@ wheels/
 
 # Virtual environments
 .venv
+
+# Model checkpoints and evaluation splits live here. Neither is committed: the
+# weights are ~2.2 GiB and the split is an upstream artifact. Both rules live at
+# the repository root, and no file under either directory is ever tracked, so a
+# checkout of an older revision cannot expose them to the snapshotter.
+models/
+data/
+
+# No weight file and no checkpoint accessory may be committed, wherever it is
+# dropped. The two directory rules above cover the documented locations; these
+# format and filename rules are the safety net for a stray copy, which matters
+# because the snapshotter only refuses files over 1 MiB -- a 313 KiB
+# tokenizer.json would otherwise be committed silently. Deliberate, and nothing
+# tracked today matches any of them: this repository holds no binary artifacts.
+*.safetensors
+*.gguf
+*.ckpt
+*.onnx
+*.mlx
+*.pt
+*.pth
+*.bin
+*.msgpack
+*.h5
+tokenizer.json
+tokenizer_config.json
+chat_template.jinja
+special_tokens_map.json
+generation_config.json
+vocab.json
+merges.txt
