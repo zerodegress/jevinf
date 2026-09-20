@@ -14,15 +14,26 @@ The checkpoint's entry points ship beside the weights (`rl_agent_api.py` over `r
 are imported from the model directory rather than vendored. Both sides run on the same device and in the
 same precision: a cross-device comparison would measure the port, not the adapter.
 
+That last clause has to be enforced, because the reference picks its own precision:
+`RLAgent.system_one` and `rl_common.predict_items` both set `use_amp = device.type == "cuda"` and
+autocast to the config's bf16. On MPS that leaves it fp32, which is why the gate agreed there; on CUDA
+it runs bf16 against our fp32 engine. Measured on a CUDA host: left alone, 7 of 16 questions
+agree and `max Δp` is 0.3215, including a flipped winner on the conformance set's three-way choice; with
+the reference's autocast neutralised, 16 of 16 agree and `max Δp` is 0.0000. So the gate neutralises it
+and reports the autocast-on numbers as information only.
+
     uv run python scripts/laya_parity.py --model /path/to/laya [--max-rows 16]
 """
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import sys
 import time
 from pathlib import Path
+
+import torch
 
 CASES = [
     ("email triage",
@@ -115,6 +126,28 @@ def compare_answers(mine: dict, theirs: dict) -> tuple[bool, float, str]:
     return ok, gap, f"score {mine['score']} vs {theirs['score']}"
 
 
+@contextlib.contextmanager
+def _autocast_disabled():
+    """Make the checkpoint's own code run in fp32 even on CUDA.
+
+    `RLAgent.system_one` and `rl_common.predict_items` gate autocast on `device.type == "cuda"`, so the
+    reference is bf16 exactly where our engine is fp32. Neutralising `torch.autocast` is what MPS already
+    does for free, and it is the only way to compare the adapter rather than the two precisions.
+    """
+    real = torch.autocast
+    torch.autocast = lambda *a, **k: contextlib.nullcontext()
+    try:
+        yield
+    finally:
+        torch.autocast = real
+
+
+def reference_answers(ref, state, questions) -> dict:
+    """The checkpoint's answers for one state, at the precision the gate compares against."""
+    with _autocast_disabled():
+        return ref.system_one(state, questions)["answers"]
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", required=True)
@@ -134,8 +167,10 @@ def main() -> int:
 
     print(f"reference: {model_dir}/rl_agent_api.py (imported in place)")
     t0 = time.perf_counter()
-    ref = rl_agent_api.RLAgent(str(model_dir), device=resolve_backend(args.backend).device)
-    print(f"  loaded reference in {time.perf_counter() - t0:.1f}s")
+    device = resolve_backend(args.backend).device
+    ref = rl_agent_api.RLAgent(str(model_dir), device=device)
+    print(f"  loaded reference in {time.perf_counter() - t0:.1f}s  (device {device}; it autocasts to "
+          f"{ref.dtype} on CUDA only, neutralised for the comparison below)")
     pred = load_predictor(str(model_dir), backend=args.backend, arch=resolve("laya"), precision="fp32")
     engine = LayaEngine(pred, max_rows=args.max_rows)
     report = Report()
@@ -167,12 +202,14 @@ def main() -> int:
     # ---------------------------------------------------------------- 2) answers
     agree, worst, total = 0, 0.0, 0
     rows_total, q_total = 0, 0
+    ours_by_case: dict[str, dict] = {}
     for name, state, questions in CASES:
-        theirs = ref.system_one(state, questions)["answers"]
+        theirs = reference_answers(ref, state, questions)
         started = time.perf_counter()
         mine = engine.evaluate({"states": [{"id": "s", "state": state, "questions": questions}]})
         elapsed = time.perf_counter() - started
         answers = mine["states"][0]["answers"]
+        ours_by_case[name] = answers
         rows_total += mine["execution"]["rows"]
         q_total += len(questions)
         for qid in questions:
@@ -225,7 +262,7 @@ def main() -> int:
                        else dict(reversed(list(criteria.items()))))
             ours = [engine.evaluate({"states": [{"id": "s", "state": state, "questions": {qid: spec}}]})
                     ["states"][0]["answers"][qid] for spec in (q, {**q, "criteria": flipped})]
-            refa = [ref.system_one(state, {qid: spec})["answers"][qid] for spec in (q, {**q, "criteria": flipped})]
+            refa = [reference_answers(ref, state, {qid: spec})[qid] for spec in (q, {**q, "criteria": flipped})]
             ours_gap = max(abs(ours[0]["probabilities"][k] - ours[1]["probabilities"][k])
                            for k in ours[0]["probabilities"])
             ref_gap = max(abs(refa[0]["probabilities"][k] - refa[1]["probabilities"][k])
@@ -240,6 +277,19 @@ def main() -> int:
                  compared > 0 and mismatches == 0, f"{compared} choice questions, {mismatches} mismatches")
 
     # ---------------------------------------------------------------- informational
+    # What the reference does on CUDA when nothing neutralises it. Worth seeing -- it is the precision a
+    # caller of this checkpoint gets on this device -- but it is not what the port is judged against.
+    if torch.device(device).type == "cuda":
+        moved, m_total, m_worst = 0, 0, 0.0
+        for name, state, questions in CASES:
+            for qid, answer in ref.system_one(state, questions)["answers"].items():
+                ok, gap, _detail = compare_answers(ours_by_case[name][qid], answer)
+                m_total += 1
+                moved += int(not ok)
+                m_worst = max(m_worst, gap)
+        print(f"\n  · reference under its own CUDA autocast ({ref.dtype}): {m_total - moved}/{m_total} "
+              f"of the same answers still agree, max Δp {m_worst:.4f} — information, not a verdict")
+
     wide = CASES[1][2]["route"]
     out = engine.evaluate({"states": [{"id": "s", "state": CASES[1][1], "questions": {"route": wide}}]})
     ans = out["states"][0]["answers"]["route"]
