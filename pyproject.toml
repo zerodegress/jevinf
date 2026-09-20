@@ -21,6 +21,14 @@ jevinf = "jevinf.cli:main"
 # Not a runtime dependency.
 dev = ["typesafe-sdk>=0.7"]
 
+# Optional, and not installed by a plain `uv sync`: the fused kernel behind the chunked
+# gated-delta-rule layers that make up 3 of decider-2b's 4 layers. Without it transformers
+# falls back to a reference PyTorch implementation -- correct, but slower, and it warns.
+# `causal-conv1d` is deliberately absent: it ships source only and no prebuilt wheel matches
+# this project's Python/torch/CUDA triple, so installing it fails on a matching host.
+# AGENTS.md records the failure; add it by hand where a published wheel does exist.
+decider-kernels = ["flash-linear-attention>=0.5.2"]
+
 [build-system]
 requires = ["uv_build>=0.12.3,<0.13.0"]
 build-backend = "uv_build"

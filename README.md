@@ -54,6 +54,16 @@ uv sync                # build .venv from uv.lock
 uv run jevinf --help
 ```
 
+**Optional: faster `decider-2b`.** Three of its four layers are linear attention, and transformers
+falls back to reference PyTorch kernels for them unless `flash-linear-attention` is installed. It is
+not a runtime dependency:
+
+```bash
+uv sync --group decider-kernels
+```
+
+[AGENTS.md](AGENTS.md#environment-and-setup) records why `causal-conv1d` is not in that group.
+
 **Keep the project and `.venv` on a filesystem that supports symlinks and POSIX permissions.** A uv
 `.venv` on a filesystem that lacks them (ExFAT, for instance) breaks; keep build artifacts on a
 normal local disk. The prototype is tuned for Apple silicon (MPS) with unified memory.

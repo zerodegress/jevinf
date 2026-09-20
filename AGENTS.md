@@ -33,6 +33,26 @@ uv sync                       # builds .venv from uv.lock
 uv run jevinf --help
 ```
 
+**Optional: lighter `decider-2b`.** Three of its four layers are chunked gated-delta-rule linear
+attention, and transformers falls back to a reference PyTorch implementation unless
+`flash-linear-attention` is importable — correct, but slower, and it announces the fallback on every
+load:
+
+```bash
+uv sync --group decider-kernels       # flash-linear-attention + fla-core + einops
+```
+
+Verified on the CUDA host: the `chunk_gated_delta_rule` warning disappears and `decider_parity` still
+passes (argmax 10/10, `max |Δp|` 0.0119, the same as the fallback run), so the fused kernel shifts the
+numbers by ≲0.005 without moving an answer.
+
+`causal-conv1d` is deliberately **not** in that group. It publishes source only and derives from its
+release tag the prebuilt wheel it would download; no asset matches this project's Python, torch and CUDA
+triple, so it falls back to a source build that fails with *"fatbinary fatal: Could not open input file
+'causal_conv1d_update.compute_75.cubin'"*. Including it would make
+`uv sync --group decider-kernels` fail outright. A host whose triple does have a published wheel can add
+it by hand; without it `causal_conv1d_fn` keeps falling back.
+
 **Platform constraint.** `torch-mps` (Apple silicon) and `torch-cuda` (NVIDIA) are implemented;
 `torch-cpu` and `torch-rocm` are declared in [backend.py](src/jevinf/backend.py) but refuse to run, by
 design — an unimplemented backend must fail loudly rather than quietly land somewhere else. `resolve()`

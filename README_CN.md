@@ -52,6 +52,15 @@ uv sync                # 依 uv.lock 建立 .venv
 uv run jevinf --help
 ```
 
+**可选：让 `decider-2b` 更快。** 它每 4 层里有 3 层是线性注意力，若没装
+`flash-linear-attention`，transformers 会退回参考 PyTorch 内核。它不是运行时依赖：
+
+```bash
+uv sync --group decider-kernels
+```
+
+`causal-conv1d` 为什么不在这个组里，[AGENTS.md](AGENTS.md#environment-and-setup) 有记录。
+
 **项目与 `.venv` 都必须放在支持符号链接与 POSIX 权限的文件系统上。** 缺这两样的文件系统（例如
 ExFAT）放 uv 的 `.venv` 会坏 —— 构建产物也放普通本地盘。本原型针对 Apple silicon（MPS）与统一
 内存调优。
