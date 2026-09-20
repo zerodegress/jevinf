@@ -77,8 +77,9 @@ Backends are chosen with `--backend`:
 | `torch-cuda` | NVIDIA GPUs through CUDA | wired up |
 | `torch-rocm` | AMD GPUs through ROCm | declared |
 
-`torch-mps` and `torch-cuda` are wired up; `torch-cpu` and `torch-rocm` refuse to run. Every measured
-number in these docs was taken on MPS — a CUDA host has to re-measure them for itself.
+`torch-mps` and `torch-cuda` are wired up; `torch-cpu` and `torch-rocm` refuse to run. Timings carry
+the device they were taken on — [docs/strategies.md](docs/strategies.md) now has both an MPS and a CUDA
+column — so a host of either kind re-measures rather than quotes the other's figures.
 
 The model family is chosen with `--arch`:
 

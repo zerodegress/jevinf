@@ -74,8 +74,9 @@ ExFAT）放 uv 的 `.venv` 会坏 —— 构建产物也放普通本地盘。本
 | `torch-cuda` | NVIDIA，经 CUDA | 已接通 |
 | `torch-rocm` | AMD，经 ROCm | 已声明 |
 
-`torch-mps` 与 `torch-cuda` 已接通；`torch-cpu` 与 `torch-rocm` 会拒绝运行。文档里所有实测数字都是
-在 MPS 上测的——CUDA 机器需要自己重测一遍。
+`torch-mps` 与 `torch-cuda` 已接通；`torch-cpu` 与 `torch-rocm` 会拒绝运行。计时数字都带设备标注
+（[docs/strategies.md](docs/strategies.md) 现在 MPS 与 CUDA 两栏并列），任一种设备都要自己重测，
+不能直接引用另一种的数字。
 
 模型架构由 `--arch` 选择：
 
