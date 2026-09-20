@@ -59,10 +59,11 @@ Backends are chosen with `--backend`:
 |---|---|---|
 | `torch-mps` | Apple silicon through Metal | default |
 | `torch-cpu` | CPU only | declared |
-| `torch-cuda` | NVIDIA GPUs through CUDA | declared |
+| `torch-cuda` | NVIDIA GPUs through CUDA | wired up |
 | `torch-rocm` | AMD GPUs through ROCm | declared |
 
-Only `torch-mps` is wired up; the other three refuse to run.
+`torch-mps` and `torch-cuda` are wired up; `torch-cpu` and `torch-rocm` refuse to run. Every measured
+number in these docs was taken on MPS — a CUDA host has to re-measure them for itself.
 
 The model family is chosen with `--arch`:
 

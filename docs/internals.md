@@ -31,7 +31,9 @@ library pitfalls that cost real debugging time.
 
 ## Memory facts
 
-* Target platform: Apple silicon Mac with unified memory, MPS backend.
+* Target platforms: Apple silicon Mac with unified memory (MPS) and NVIDIA GPUs (CUDA); both are
+  wired up in `backend.py`. The facts below were measured on MPS — CUDA needs its own pass, and
+  `device.py` is the one place that has to know which is which.
 * Measured KV footprint: `2 × n_kv_heads(8) × head_dim(128) × 4B × 28 layers = 224 KiB/token` (fp32);
   roughly 30 MB per state, kept resident lazily per state so the peak holds only one copy.
 

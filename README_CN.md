@@ -57,10 +57,11 @@ ExFAT）放 uv 的 `.venv` 会坏 —— 构建产物也放普通本地盘。本
 |---|---|---|
 | `torch-mps` | Apple silicon，经 Metal | 默认 |
 | `torch-cpu` | 纯 CPU | 已声明 |
-| `torch-cuda` | NVIDIA，经 CUDA | 已声明 |
+| `torch-cuda` | NVIDIA，经 CUDA | 已接通 |
 | `torch-rocm` | AMD，经 ROCm | 已声明 |
 
-目前只有 `torch-mps` 接通；其余三个会拒绝运行。
+`torch-mps` 与 `torch-cuda` 已接通；`torch-cpu` 与 `torch-rocm` 会拒绝运行。文档里所有实测数字都是
+在 MPS 上测的——CUDA 机器需要自己重测一遍。
 
 模型架构由 `--arch` 选择：
 

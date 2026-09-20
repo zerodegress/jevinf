@@ -129,11 +129,12 @@ def main() -> int:
     import rl_common
 
     from jevinf.arch import resolve
+    from jevinf.backend import resolve as resolve_backend
     from jevinf.laya import LayaEngine, build_sequence, load_predictor, question_spec, render_options
 
     print(f"reference: {model_dir}/rl_agent_api.py (imported in place)")
     t0 = time.perf_counter()
-    ref = rl_agent_api.RLAgent(str(model_dir), device="mps")
+    ref = rl_agent_api.RLAgent(str(model_dir), device=resolve_backend(args.backend).device)
     print(f"  loaded reference in {time.perf_counter() - t0:.1f}s")
     pred = load_predictor(str(model_dir), backend=args.backend, arch=resolve("laya"), precision="fp32")
     engine = LayaEngine(pred, max_rows=args.max_rows)

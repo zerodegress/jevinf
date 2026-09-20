@@ -139,6 +139,8 @@ def _top(answer, kind):
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", required=True)
+    ap.add_argument("--backend", default="torch-mps",
+                    help="device for both sides; the reference package and this engine must share one")
     ap.add_argument("--max-state-tokens", type=int, default=1536)
     ap.add_argument("--max-rows", type=int, default=32,
                     help="rows per batched forward; 1 makes every row's numbers shape-independent")
@@ -179,7 +181,11 @@ def main() -> int:
     print("[2] answers vs the package")
     # The reference is produced first and then released: two bf16 copies of this checkpoint plus
     # activations is more residency than the machine comfortably holds at once.
-    d = Decider(str(model), device="mps", use_graphs=False)
+    from jevinf.backend import resolve as resolve_backend
+    from jevinf.device import empty_cache
+
+    device = resolve_backend(args.backend).device
+    d = Decider(str(model), device=device, use_graphs=False)
     refs = {label: d.system_one(state, questions, independent=True, max_state_tokens=args.max_state_tokens)["answers"]
             for label, state, questions in CASES}
     del d
@@ -187,7 +193,7 @@ def main() -> int:
     import torch
 
     gc.collect()
-    torch.mps.empty_cache()
+    empty_cache(torch.device(device))
 
     agree = total = 0
     worst = 0.0
@@ -254,7 +260,7 @@ def _ours_answers(model, state, questions, args):
     if engine is None:
         from jevinf import upstream
 
-        pred = upstream.load_predictor(str(model), arch="decider-2b")
+        pred = upstream.load_predictor(str(model), arch="decider-2b", backend=args.backend)
         from jevinf.decider import DeciderEngine
 
         engine = DeciderEngine(pred, max_rows=args.max_rows, max_ctx_tokens=args.max_state_tokens)

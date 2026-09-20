@@ -2,6 +2,9 @@
 
 [Back to README](../README.md)
 
+Every timing below was measured on MPS (Apple silicon). A speedup is a property of the arrangement
+*and* the device, so a CUDA host must re-measure rather than quote these.
+
 ## How the forwards are arranged
 
 Upstream, every candidate path is `[state segment] + [question segment] + [candidate suffix] + eos`,

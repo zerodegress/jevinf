@@ -42,6 +42,7 @@ from starlette.concurrency import run_in_threadpool
 from . import __version__, upstream
 from .arch import DEFAULT_ARCH
 from .backend import DEFAULT_BACKEND
+from .device import allocated_bytes
 from .engine import PrefixShareEngine
 from .jev_api import (
     CONFIDENCE_FORMULA,
@@ -455,8 +456,6 @@ def create_app(service: EvaluateService):
 
     @app.get("/health")
     async def health():
-        import torch
-
         return {
             "status": "ok",
             "engine": "jevinf",
@@ -483,8 +482,7 @@ def create_app(service: EvaluateService):
                 "confidence_formula": CONFIDENCE_FORMULA,
                 "backend_limits": service.facts["backend_limits"],
             },
-            "mps_allocated_bytes": (torch.mps.current_allocated_memory()
-                                    if service.predictor.device.type == "mps" else None),
+            "device_allocated_bytes": allocated_bytes(service.predictor.device),
             "knobs": service.facts["knobs"],
         }
 

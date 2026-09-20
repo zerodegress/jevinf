@@ -26,6 +26,8 @@ import math
 import time
 from dataclasses import dataclass, field
 
+from .device import synchronize
+
 # Prompt constants, mirroring decider.prompt (narrow rendering is unchanged since v1).
 LETTERS = "ABCDEFGHIJ"
 NARROW = len(LETTERS)
@@ -446,8 +448,7 @@ class DeciderEngine:
         return cache
 
     def _sync(self):
-        if str(self.device).startswith("mps"):
-            self.torch.mps.synchronize()
+        synchronize(self.device)
 
     # ---------------------------------------------------------------- forwards
     def forward_prefix(self, ids: list[int], stats: DeciderStats | None = None):

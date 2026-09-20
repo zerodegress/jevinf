@@ -2,7 +2,7 @@
 
 Comparison protocol: pick the answer as the argmax over candidate_ids for each
 question and compare agreement rates; also report TV / KL.
-Timing protocol: end-to-end wall-clock on the dev split, timed after MPS
+Timing protocol: end-to-end wall-clock on the dev split, timed after device
 synchronization, with one warm-up run and then the median of the repeats.
 """
 from __future__ import annotations
@@ -14,6 +14,7 @@ import statistics
 import time
 
 from . import upstream
+from .device import empty_cache, synchronize
 from .engine import PrefixShareEngine
 from .plan import build_plan
 
@@ -24,16 +25,6 @@ def _answers_by_q(result: dict) -> dict[str, dict]:
         for qid, ans in st["answers"].items():
             out[f"{st['id']}:{qid}"] = ans
     return out
-
-
-def _empty_cache(device):
-    """The MPS allocator holds freed blocks in its pool. Running chunk by chunk the pool grows
-    linearly (measured: the 15-chunk dev split climbed from a ~1.3GB peak to 19.5GB and
-    OOM'd)."""
-    import torch
-
-    if device.type == "mps":
-        torch.mps.empty_cache()
 
 
 def _chunk_payload(payload: dict, size: int | None):
@@ -120,25 +111,18 @@ def compare(a: dict, b: dict, reference: dict | None = None) -> dict:
     return out
 
 
-def _sync(device):
-    import torch
-
-    if device.type == "mps":
-        torch.mps.synchronize()
-
-
 def timed(fn, repeats: int, device):
     """Return (first-run time, median of repeats, list of all run times, result). With repeats=0 it runs only once."""
     t0 = time.perf_counter()
     r0 = fn()
-    _sync(device)
+    synchronize(device)
     first = time.perf_counter() - t0
     times, result = [], r0
     for _ in range(repeats):
-        _empty_cache(device)
+        empty_cache(device)
         t0 = time.perf_counter()
         result = fn()
-        _sync(device)
+        synchronize(device)
         times.append(time.perf_counter() - t0)
     return first, (statistics.median(times) if times else first), times, result
 
@@ -210,13 +194,13 @@ def run_bench(predictor, payload, *, repeats=3, strategies=("fused", "two_stage"
 
     # The self-check only needs a small slice: a single forward over all 898 paths would blow past 16GB in intermediate tensors (measured: the MLP alone needs 5GB).
     report["selfcheck"] = head_selfcheck(predictor, chunks[0])
-    _empty_cache(device)
+    empty_cache(device)
 
     def run_upstream():
         outs = []
         for c in chunks:
             outs.append(predictor.predict(c, batch_questions=batch_questions, temperature=1.0))
-            _empty_cache(device)
+            empty_cache(device)
         return _merge_results(outs)
 
     first, med, times, res_up = timed(run_upstream, repeats, device)
@@ -227,7 +211,7 @@ def run_bench(predictor, payload, *, repeats=3, strategies=("fused", "two_stage"
     }
 
     for strat in strategies:
-        _empty_cache(device)
+        empty_cache(device)
         eng = PrefixShareEngine(predictor, strategy=strat, head_chunk=head_chunk,
                                 stage_a_batch=stage_a_group > 1,
                                 stage_a_group=max(1, stage_a_group))
@@ -237,7 +221,7 @@ def run_bench(predictor, payload, *, repeats=3, strategies=("fused", "two_stage"
             outs = []
             for c, p in zip(chunks, plans):
                 outs.append(eng.evaluate(c, plan=p))
-                _empty_cache(device)
+                empty_cache(device)
             return _merge_results(outs)
 
         first, med, times, res_eng = timed(run_engine, repeats, device)

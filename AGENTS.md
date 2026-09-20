@@ -25,18 +25,18 @@ Three model families are wired up, dispatched on `arch.arrangement` — never on
 
 ## Environment and setup
 
-Requires Python ≥3.14 and [uv](https://docs.astral.sh/uv/). There is no `.venv` in the repo; create it:
+Requires Python ≥3.14 and [uv](https://docs.astral.sh/uv/). `.venv` is not committed; create it:
 
 ```bash
 uv sync                       # builds .venv from uv.lock
 uv run jevinf --help
 ```
 
-**Platform constraint.** Only `torch-mps` is implemented. `torch-cpu`, `torch-cuda` and
-`torch-rocm` are declared in [backend.py](src/jevinf/backend.py) but refuse to run, by design — an
-unimplemented backend must fail loudly rather than quietly land somewhere else. On a machine without
-Apple silicon / MPS you can read, edit and lint the code, but **you cannot load weights or run any
-command that loads a model**. Do not "fix" this by wiring up CPU as a convenience; that is a
+**Platform constraint.** `torch-mps` (Apple silicon) and `torch-cuda` (NVIDIA) are implemented;
+`torch-cpu` and `torch-rocm` are declared in [backend.py](src/jevinf/backend.py) but refuse to run, by
+design — an unimplemented backend must fail loudly rather than quietly land somewhere else. `resolve()`
+also checks that the machine actually has the device, so a wired-up backend on the wrong hardware
+reports that reason instead of a raw torch error. Do not "fix" the CPU hole as a convenience; that is a
 deliberate scope boundary.
 
 Keep the project and `.venv` on a filesystem with symlinks and POSIX permissions (ExFAT breaks uv).
@@ -72,6 +72,9 @@ the cheapest one that covers your change, and report the actual output.
 | 5 | Service layer forwards engine output verbatim | `uv run python scripts/api_smoke.py --split data/dev.jsonl` | live server + golden |
 | 6 | Equivalence + timing on the dev split | `uv run jevinf bench -m models/NanoJev --split data/dev.jsonl --out report.json` | weights |
 
+**On a CUDA host, add `--backend torch-cuda` to any of these.** The checkpoint and split are the same;
+the numbers are not — re-measure rather than compare against the MPS figures.
+
 Check 5 compares against an offline golden at `/tmp/golden32.json`; generate it with
 `uv run jevinf eval -m models/NanoJev --split data/dev.jsonl --states 32 --out /tmp/golden32.json`, or
 pass `--golden`. A missing golden only skips that comparison.
@@ -99,7 +102,8 @@ places — read the module docstring before pointing them at another `--arch`.
 src/jevinf/
   cli.py        argparse entry point; subcommands selfcheck/bench/eval/oracle/compare/serve
   arch.py       the three families as structural facts; the dispatch key is `arrangement`
-  backend.py    named compute backends; only torch-mps is implemented
+  backend.py    named compute backends; torch-mps + torch-cuda are wired up
+  device.py     device runtime primitives the engines share (sync, allocator cache, memory)
   upstream.py   loads vendored upstream by path; predictor factory; split readers
   plan.py       reverse-derives segmented token ids from upstream `leaf_tokens`, self-checked
   head.py       decision-head math, a mirror of the latter half of upstream DecisionModel.forward

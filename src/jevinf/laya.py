@@ -40,6 +40,7 @@ import torch.nn as nn
 
 from .arch import Architecture, resolve as resolve_arch
 from .backend import DEFAULT_BACKEND, resolve as resolve_backend
+from .device import synchronize
 
 QTYPES = {"choice": 0, "score": 1, "noul": 2}
 QTYPE_NAMES = {v: k for k, v in QTYPES.items()}
@@ -307,8 +308,7 @@ class LayaEngine:
             )
 
     def _sync(self) -> None:
-        if str(self.device).startswith("mps"):
-            torch.mps.synchronize()
+        synchronize(self.device)
 
     # -------------------------------------------------------------- rows
     def plan_rows(self, state, questions: dict) -> tuple[list[dict], dict]:

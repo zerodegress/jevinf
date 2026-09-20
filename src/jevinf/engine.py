@@ -40,6 +40,7 @@ from dataclasses import asdict, dataclass
 
 from transformers import DynamicCache
 
+from .device import synchronize
 from .head import head_logits
 from .plan import Plan, build_plan
 
@@ -280,8 +281,7 @@ class PrefixShareEngine:
 
     # ---------------------------------------------------------------- main path
     def _sync(self):
-        if self.device.type == "mps":
-            self.torch.mps.synchronize()
+        synchronize(self.device)
 
     def evaluate(self, payload, plan: Plan | None = None, temperature: float = 1.0):
         from .upstream import predict_module

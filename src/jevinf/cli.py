@@ -157,7 +157,8 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="jevinf", description=__doc__)
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument("--backend", default=DEFAULT_BACKEND, choices=list(BACKENDS),
-                        help="compute backend; only torch-mps is implemented today")
+                        help="compute backend; torch-mps (Apple silicon) and torch-cuda (NVIDIA) "
+                             "are wired up, torch-cpu and torch-rocm refuse to run")
     common.add_argument("--arch", default=DEFAULT_ARCH, choices=list(ARCHITECTURES),
                         help="model architecture; nanojev, decider-2b and laya are wired up")
 
