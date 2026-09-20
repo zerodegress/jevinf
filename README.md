@@ -17,6 +17,9 @@ forwards are arranged, and the shape dependence behind those numbers, is in
 Every command that loads weights takes `-m/--model`, the checkpoint directory; commands that read
 the evaluation split also take `--split`, a jsonl.
 
+Neither is in this repository. [AGENTS.md](AGENTS.md#inputs-that-are-not-in-the-repo) pins the exact
+download commands and the sha256 of every file they produce.
+
 ```bash
 uv sync
 uv run jevinf selfcheck -m models/NanoJev --split data/dev.jsonl --states 4

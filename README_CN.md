@@ -15,6 +15,9 @@ Jev 这一系决策模型的推理引擎：每条候选路径按分段前向计�
 凡是要加载权重的命令都显式给 `-m/--model`（checkpoint 目录）；要读评测集的命令再给 `--split`
 （jsonl 文件）。
 
+两者都不在本仓库里。[AGENTS.md](AGENTS.md#inputs-that-are-not-in-the-repo) 里钉死了下载命令，以及每个
+产物的 sha256。
+
 ```bash
 uv sync
 uv run jevinf selfcheck -m models/NanoJev --split data/dev.jsonl --states 4
