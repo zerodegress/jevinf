@@ -10,6 +10,10 @@ Known: `batch_select_indices` rewrites in place (returns None); after hand-assem
 `get_seq_length()` reads 0. This probe checks whether DynamicLayer has an initialization flag that
 can be set by hand, and **verifies by numerical equivalence** (continue the forward after
 extraction and compare hidden against one full-length forward).
+
+`--backend` picks the device (default `torch-mps`). Re-run on CUDA on 2026-09-20 the answer is the
+same: the hand-assembled layer carries `is_initialized=True`, and the continuation forward still
+raises a shape error at row 0 rather than returning a wrong number.
 """
 from __future__ import annotations
 
@@ -21,19 +25,22 @@ import torch
 from transformers import AutoConfig, AutoModel, DynamicCache
 from transformers.cache_utils import DynamicLayer
 
-def main(model: str) -> int:
+def main(model: str, backend: str) -> int:
+    from jevinf.backend import resolve as resolve_backend
+
+    device = resolve_backend(backend).device
     cfg = AutoConfig.from_pretrained(str(Path(model) / "backbone_config"), local_files_only=True)
     cfg.use_cache = True
-    model = AutoModel.from_config(cfg, attn_implementation="sdpa").float().eval().to("mps")
+    model = AutoModel.from_config(cfg, attn_implementation="sdpa").float().eval().to(device)
     torch.manual_seed(0)
 
     lens = [7, 5, 6]
-    rows = [torch.randint(0, 1000, (1, n), device="mps") for n in lens]
+    rows = [torch.randint(0, 1000, (1, n), device=device) for n in lens]
     width = max(lens)
-    tokens = torch.full((len(rows), width), 0, dtype=torch.long, device="mps")
+    tokens = torch.full((len(rows), width), 0, dtype=torch.long, device=device)
     for i, r in enumerate(rows):
         tokens[i, : r.shape[1]] = r
-    attn = torch.arange(width, device="mps")[None, :] < torch.tensor(lens, device="mps")[:, None]
+    attn = torch.arange(width, device=device)[None, :] < torch.tensor(lens, device=device)[:, None]
 
     with torch.no_grad():
         ref_full = model(input_ids=torch.cat(rows, dim=1), attention_mask=None).last_hidden_state[:, -1]
@@ -64,8 +71,8 @@ def main(model: str) -> int:
                     except Exception:
                         pass
             seq2 = hand.get_seq_length()
-            new = torch.randint(0, 1000, (1, 2), device="mps")
-            full_mask = torch.ones((1, lens[i] + 2), dtype=torch.bool, device="mps")
+            new = torch.randint(0, 1000, (1, 2), device=device)
+            full_mask = torch.ones((1, lens[i] + 2), dtype=torch.bool, device=device)
             got = model(input_ids=new, attention_mask=full_mask, past_key_values=hand,
                         use_cache=True).last_hidden_state[:, -1]
             d = float((got - ref_full[i : i + 1]).abs().max())
@@ -77,4 +84,6 @@ def main(model: str) -> int:
 if __name__ == "__main__":
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("-m", "--model", required=True, help="checkpoint directory (weights)")
-    raise SystemExit(main(ap.parse_args().model))
+    ap.add_argument("--backend", default="torch-mps", help="compute backend, see jevinf.backend")
+    args = ap.parse_args()
+    raise SystemExit(main(args.model, args.backend))
