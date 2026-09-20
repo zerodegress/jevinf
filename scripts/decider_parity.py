@@ -263,10 +263,10 @@ def _ours_answers(model, state, questions, args):
         pred = upstream.load_predictor(str(model), arch="decider-2b", backend=args.backend)
         from jevinf.decider import DeciderEngine
 
-        engine = DeciderEngine(pred, max_rows=args.max_rows, max_ctx_tokens=args.max_state_tokens)
+        engine = DeciderEngine(pred, max_rows=args.max_rows, max_state_tokens=args.max_state_tokens)
         _CACHE["engine"] = engine
     out = engine.evaluate({"states": [{"id": "s", "state": state, "questions": questions}]},
-                          max_ctx_tokens=args.max_state_tokens)
+                          max_state_tokens=args.max_state_tokens)
     _CACHE["last_execution"] = out["execution"]
     return out["states"][0]["answers"]
 
