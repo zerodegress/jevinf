@@ -113,21 +113,25 @@ the cheapest one that covers your change, and report the actual output.
 | 3 | `laya` family matches the checkpoint's own code | `uv run python scripts/laya_parity.py --model models/laya` | weights |
 | 4 | Official SDK conformance | `uv run jevinf serve -m models/NanoJev --port 8226 &` then `uv run python scripts/jev_conformance.py --base http://127.0.0.1:8226` | live server |
 | 5 | Service layer forwards engine output verbatim | `uv run python scripts/api_smoke.py --split data/dev.jsonl` | live server + golden |
-| 6 | Equivalence + timing on the dev split | `uv run jevinf bench -m models/NanoJev --split data/dev.jsonl --out report.json` | weights |
+| 6 | Equivalence + timing on the dev split | `uv run jevinf bench -m models/NanoJev --split data/dev.jsonl --out data/report.json` | weights |
 
 **On a CUDA host, add `--backend torch-cuda` to any of these.** The checkpoint and split are the same;
 the numbers are not — re-measure rather than compare against the MPS figures.
 
-Check 5 compares against an offline golden at `/tmp/golden32.json`; generate it with
-`uv run jevinf eval -m models/NanoJev --split data/dev.jsonl --states 32 --out /tmp/golden32.json`, or
+Check 5 compares against an offline golden at `data/golden32.json`; generate it with
+`uv run jevinf eval -m models/NanoJev --split data/dev.jsonl --states 32 --out data/golden32.json`, or
 pass `--golden`. A missing golden only skips that comparison.
+
+**Every measurement output goes under `data/`.** It is the only scratch directory that is ignored, and
+`--out` creates missing parents, so `data/report.json` works in a fresh clone. Writing `report.json`,
+`base.json` or `mine.json` beside the source would leave them untracked and snapshotted.
 
 The equivalence protocol is always the same: run the upstream oracle and your candidate, then compare.
 
 ```bash
-uv run jevinf oracle -m models/NanoJev --split data/dev.jsonl --out base.json
-uv run jevinf eval   -m models/NanoJev --split data/dev.jsonl --out mine.json
-uv run jevinf compare --reference base.json --candidate mine.json
+uv run jevinf oracle -m models/NanoJev --split data/dev.jsonl --out data/base.json
+uv run jevinf eval   -m models/NanoJev --split data/dev.jsonl --out data/mine.json
+uv run jevinf compare --reference data/base.json --candidate data/mine.json
 ```
 
 **Pass criteria: `argmax_agreement` 100%, TV median 0.** The primary performance metric is

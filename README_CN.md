@@ -18,10 +18,11 @@ Jev 这一系决策模型的推理引擎：每条候选路径按分段前向计�
 uv sync
 uv run jevinf selfcheck -m models/NanoJev --split data/dev.jsonl --states 4
 uv run jevinf bench -m models/NanoJev --split data/dev.jsonl --states 8
-uv run jevinf bench -m models/NanoJev --split data/dev.jsonl --out report.json
-uv run jevinf eval -m models/NanoJev --input request.json
-uv run jevinf oracle -m models/NanoJev --split data/dev.jsonl --out base.json
-uv run jevinf compare --reference base.json --candidate mine.json
+uv run jevinf bench -m models/NanoJev --split data/dev.jsonl --out data/report.json
+uv run jevinf eval -m models/NanoJev --input data/request.json
+uv run jevinf oracle -m models/NanoJev --split data/dev.jsonl --out data/base.json
+uv run jevinf eval   -m models/NanoJev --split data/dev.jsonl --out data/mine.json
+uv run jevinf compare --reference data/base.json --candidate data/mine.json
 ```
 
 `jevinf serve` 同时提供两个入口：Jev 兼容的 `/v1/systemone` 与原生调试的 `/api/evaluate`。

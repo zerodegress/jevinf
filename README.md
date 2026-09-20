@@ -20,10 +20,11 @@ the evaluation split also take `--split`, a jsonl.
 uv sync
 uv run jevinf selfcheck -m models/NanoJev --split data/dev.jsonl --states 4
 uv run jevinf bench -m models/NanoJev --split data/dev.jsonl --states 8
-uv run jevinf bench -m models/NanoJev --split data/dev.jsonl --out report.json
-uv run jevinf eval -m models/NanoJev --input request.json
-uv run jevinf oracle -m models/NanoJev --split data/dev.jsonl --out base.json
-uv run jevinf compare --reference base.json --candidate mine.json
+uv run jevinf bench -m models/NanoJev --split data/dev.jsonl --out data/report.json
+uv run jevinf eval -m models/NanoJev --input data/request.json
+uv run jevinf oracle -m models/NanoJev --split data/dev.jsonl --out data/base.json
+uv run jevinf eval   -m models/NanoJev --split data/dev.jsonl --out data/mine.json
+uv run jevinf compare --reference data/base.json --candidate data/mine.json
 ```
 
 Two service entry points, both served by `jevinf serve`:

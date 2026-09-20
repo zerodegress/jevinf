@@ -21,7 +21,7 @@ from jevinf.bench import compare
 import argparse
 
 BASE = "http://127.0.0.1:8226"
-GOLDEN = "/tmp/golden32.json"
+GOLDEN = "data/golden32.json"
 
 
 def post(body: bytes, headers: dict | None = None):
